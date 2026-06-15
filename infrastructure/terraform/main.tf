@@ -352,6 +352,10 @@ module "cost_guard" {
   dry_run            = var.cost_guard_dry_run
   billing_account_id = var.billing_account_id
 
+  # Console export enabled is "Daily cost detail" -> the *resource* export table
+  # (gcp_billing_export_resource_v1_*). Must match exactly or the guard 404s.
+  billing_export_table_type = "gcp_billing_export_resource_v1"
+
   predictor_service_name = "${var.resource_prefix}-predictor"
   predictor_runtime_sa   = module.iam.vertex_serving_sa_email
   featurestore_id        = "${replace(var.resource_prefix, "-", "_")}_feature_store"
