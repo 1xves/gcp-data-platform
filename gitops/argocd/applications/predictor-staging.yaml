@@ -1,0 +1,111 @@
+###############################################################################
+# ArgoCD Application — predictor-staging
+#
+# Deploys the predictor Helm chart to the predictor-staging namespace with
+# full GitOps automation: automated sync, self-healing, and pruning are all
+# enabled. Staging is designed to track HEAD continuously so that every
+# merged PR is deployed automatically.
+#
+# Image tag override:
+#   CI sets the image.tag parameter at sync time via:
+#     argocd app set predictor-staging \
+#       --helm-set-string image.tag=<GIT_SHA> \
+#       --project data-platform
+#   Or via the argocd-image-updater if image automation is configured.
+#
+# HPA / replica conflict:
+#   ignoreDifferences on spec.replicas prevents ArgoCD from fighting with
+#   the HorizontalPodAutoscaler. Without this, ArgoCD would reset replicas
+#   to the Helm chart default on every sync, killing any HPA-managed scaling.
+###############################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: predictor-staging
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: gcp-data-platform
+    environment: staging
+    managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Notifications annotation — requires argocd-notifications to be installed.
+    # Sends a Slack message to #deploys-staging when sync succeeds or fails.
+    notifications.argoproj.io/subscribe.on-sync-succeeded.slack: deploys-staging
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: deploys-staging
+    notifications.argoproj.io/subscribe.on-health-degraded.slack: deploys-staging
+spec:
+  project: data-platform
+
+  # ── Source ─────────────────────────────────────────────────────────────────
+  source:
+    repoURL: https://github.com/REPLACE_ORG/gcp-data-platform.git
+    path: helm/predictor
+    targetRevision: HEAD
+
+    helm:
+      # Base values + environment overlay. Order matters: values-staging.yaml
+      # overrides anything in values.yaml.
+      valueFiles:
+        - values.yaml
+        - values-staging.yaml
+
+      # Parameters that CI overrides at deploy time. The image.tag is set to
+      # the Git SHA of the commit being deployed for full traceability.
+      parameters:
+        - name: image.tag
+          value: latest  # Overridden by CI — do not rely on this default
+
+  # ── Destination ────────────────────────────────────────────────────────────
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: predictor-staging
+
+  # ── Sync Policy ────────────────────────────────────────────────────────────
+  syncPolicy:
+    automated:
+      # prune: true — if a resource is removed from Git, it is deleted from the
+      # cluster. This keeps staging clean and avoids ghost resources accumulating.
+      prune: true
+      # selfHeal: true — if someone kubectl-applies a change directly to staging,
+      # ArgoCD will detect the drift and revert it within ~3 minutes.
+      selfHeal: true
+
+    syncOptions:
+      # Create the namespace if it does not exist yet (initial deploy).
+      - CreateNamespace=true
+      # Use foreground deletion propagation — wait for child resources to be
+      # deleted before deleting the parent (prevents dangling pods).
+      - PrunePropagationPolicy=foreground
+      # Only apply out-of-sync resources instead of the full manifest set.
+      # Reduces API server load and speeds up syncs in large charts.
+      - ApplyOutOfSyncOnly=true
+
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  # ── Ignore Differences ────────────────────────────────────────────────────
+  # Prevent ArgoCD from flagging or reverting changes that are controlled by
+  # other in-cluster controllers:
+  #
+  #   1. Deployment spec.replicas — managed by HPA. ArgoCD must not override it.
+  #   2. HPA status subresource — owned by the HPA controller, not by Helm.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+      jqPathExpressions:
+        - .status
+
+  # ── Health Check Overrides ─────────────────────────────────────────────────
+  # Use the default ArgoCD health checks for all resource types.
+  # (No custom checks needed for this chart.)

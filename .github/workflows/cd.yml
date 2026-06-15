@@ -1,0 +1,155 @@
+###############################################################################
+# CD — Continuous Deployment
+#
+# Triggers on merge to main (push event after PR is merged).
+# Builds the predictor Docker image, pushes to Artifact Registry,
+# and deploys to Cloud Run — zero-downtime rolling update.
+#
+# Deploy flow:
+#   1. Build image tagged with git SHA (immutable, traceable)
+#   2. Push to Artifact Registry
+#   3. Deploy to Cloud Run (gcloud run deploy — atomic swap, instant rollback)
+#   4. Smoke test the live Cloud Run URL
+#   5. Post deployment summary to the commit
+#
+# Required GitHub Secrets (Settings → Secrets → Actions):
+#   GCP_PROJECT_ID          — project-6db0f664-1423-47cb-86d
+#   GCP_REGION              — us-central1
+#   GCP_WORKLOAD_IDENTITY_PROVIDER  — projects/<NUM>/locations/global/workloadIdentityPools/...
+#   GCP_SERVICE_ACCOUNT     — github-actions@<PROJECT>.iam.gserviceaccount.com
+#   ARTIFACT_REGISTRY_REPO  — stg-ml-containers
+###############################################################################
+
+name: CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'vertex_ai/serving/**'
+      - 'vertex_ai/training/trainer/**'
+      - '.github/workflows/cd.yml'
+
+env:
+  PROJECT_ID:   ${{ secrets.GCP_PROJECT_ID }}
+  REGION:       ${{ secrets.GCP_REGION }}
+  AR_REPO:      ${{ secrets.ARTIFACT_REGISTRY_REPO }}
+  SERVICE_NAME: stg-predictor   # Must match resource_prefix in Terraform + Cloud Run module
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    name: Build → Push → Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Set image tag
+        id: tag
+        run: |
+          SHA=$(echo ${{ github.sha }} | cut -c1-8)
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/predictor"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "image_tagged=${IMAGE}:${SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_latest=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push predictor image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: vertex_ai/serving/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.tag.outputs.image_tagged }}
+            ${{ steps.tag.outputs.image_latest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # SHA tag = immutable reference for this deploy (enables instant rollback).
+          # latest tag = convenience for local pulls and first terraform apply.
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region:  ${{ env.REGION }}
+          image:   ${{ steps.tag.outputs.image_tagged }}
+          # Cloud Run performs a zero-downtime rolling deploy:
+          # new revision comes up → traffic switches atomically → old revision idles.
+          # If startup probe fails, Cloud Run keeps serving old revision automatically.
+
+      - name: Smoke test deployed service
+        run: |
+          SERVICE_URL="${{ steps.deploy.outputs.url }}"
+          echo "Service URL: ${SERVICE_URL}"
+
+          # Health check
+          echo "→ Testing /healthz..."
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${SERVICE_URL}/healthz")
+          if [ "$STATUS" != "200" ]; then
+            echo "FAIL: /healthz returned ${STATUS}"
+            exit 1
+          fi
+          echo "  /healthz: ${STATUS} ✓"
+
+          # Readiness check
+          echo "→ Testing /readyz..."
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${SERVICE_URL}/readyz")
+          if [ "$STATUS" != "200" ]; then
+            echo "FAIL: /readyz returned ${STATUS}"
+            exit 1
+          fi
+          echo "  /readyz: ${STATUS} ✓"
+
+          # Prediction endpoint — valid request
+          echo "→ Testing /v1/predict (valid request)..."
+          RESPONSE=$(curl -sf -X POST "${SERVICE_URL}/v1/predict" \
+            -H "Content-Type: application/json" \
+            -d '{"instances": ["smoke-test-user-001"]}')
+          echo "  Response: ${RESPONSE}"
+
+          if ! echo "$RESPONSE" | grep -q "churn_risk_score"; then
+            echo "FAIL: response missing churn_risk_score"
+            exit 1
+          fi
+          echo "  /v1/predict: churn_risk_score present ✓"
+
+          echo ""
+          echo "All smoke tests passed. Deployment successful."
+          echo "Live URL: ${SERVICE_URL}"
+
+      - name: Output deployment summary
+        if: always()
+        run: |
+          echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | ${{ env.SERVICE_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Region | ${{ env.REGION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ steps.tag.outputs.image_tagged }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | ${{ steps.deploy.outputs.url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY

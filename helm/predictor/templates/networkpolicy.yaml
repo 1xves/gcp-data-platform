@@ -1,0 +1,62 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "predictor.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "predictor.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "predictor.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Allow traffic from a dedicated ingress controller pod (e.g. nginx/GKE Gateway)
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: ingress
+    # Allow intra-namespace traffic (service mesh health checks, sidecar-to-sidecar)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+
+  egress:
+    # Kubernetes DNS — required for service discovery
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # GCP APIs (Vertex AI, IAM token exchange, metadata server) over HTTPS
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            # Exclude private RFC-1918 ranges to prevent internal SSRF while
+            # still allowing the GKE metadata server on 169.254.169.254
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    # GKE metadata server (169.254.169.254) — required for Workload Identity
+    # token acquisition. Kept as a separate rule because it is a link-local
+    # address excluded by the RFC-1918 except block above.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+{{- end }}

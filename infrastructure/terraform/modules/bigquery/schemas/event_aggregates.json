@@ -1,0 +1,11 @@
+[
+  {"name": "user_id",         "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "event_type",      "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "window_start",    "type": "TIMESTAMP", "mode": "REQUIRED"},
+  {"name": "window_end",      "type": "TIMESTAMP", "mode": "REQUIRED"},
+  {"name": "window_date",     "type": "DATE",      "mode": "REQUIRED"},
+  {"name": "event_count",     "type": "INTEGER",   "mode": "REQUIRED"},
+  {"name": "total_value_usd", "type": "FLOAT64",   "mode": "NULLABLE"},
+  {"name": "unique_sessions", "type": "INTEGER",   "mode": "REQUIRED"},
+  {"name": "computed_at",     "type": "TIMESTAMP", "mode": "REQUIRED"}
+]

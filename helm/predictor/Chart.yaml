@@ -1,0 +1,17 @@
+apiVersion: v2
+name: predictor
+description: "ML prediction service for the GCP Data Platform — serves Vertex AI online predictions via a Flask REST API"
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - ml
+  - prediction
+  - vertex-ai
+  - flask
+  - gcp
+
+maintainers:
+  - name: Sylvester Mobley
+    email: sylmobleyiii@gmail.com

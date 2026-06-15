@@ -1,0 +1,90 @@
+{
+  "name": "Event Processor Pipeline",
+  "description": "Streaming pipeline: Pub/Sub → validate → deduplicate → enrich → BigQuery",
+  "parameters": [
+    {
+      "name": "input_subscription",
+      "label": "Pub/Sub subscription ID",
+      "helpText": "Full resource path: projects/PROJECT/subscriptions/SUBSCRIPTION",
+      "isOptional": false
+    },
+    {
+      "name": "raw_output_table",
+      "label": "BigQuery raw events table",
+      "helpText": "Format: project:dataset.table",
+      "isOptional": false
+    },
+    {
+      "name": "agg_output_table",
+      "label": "BigQuery aggregates table",
+      "helpText": "Format: project:dataset.table",
+      "isOptional": false
+    },
+    {
+      "name": "dlq_topic",
+      "label": "Dead-letter Pub/Sub topic",
+      "helpText": "Full resource path: projects/PROJECT/topics/TOPIC",
+      "isOptional": false
+    },
+    {
+      "name": "reference_data_gcs",
+      "label": "GCS path for reference data",
+      "helpText": "Format: gs://bucket/path/to/profiles.jsonl",
+      "isOptional": false
+    },
+    {
+      "name": "temp_location",
+      "label": "Temporary GCS path",
+      "helpText": "Format: gs://bucket/path",
+      "isOptional": true
+    },
+    {
+      "name": "staging_location",
+      "label": "Staging GCS path",
+      "helpText": "Format: gs://bucket/path",
+      "isOptional": true
+    },
+    {
+      "name": "network",
+      "label": "Network",
+      "helpText": "VPC network self-link",
+      "isOptional": true
+    },
+    {
+      "name": "subnetwork",
+      "label": "Subnetwork",
+      "helpText": "VPC subnetwork self-link",
+      "isOptional": true
+    },
+    {
+      "name": "no_use_public_ips",
+      "label": "No Public IPs",
+      "helpText": "Disable public IPs for workers",
+      "isOptional": true
+    },
+    {
+      "name": "max_workers",
+      "label": "Max Workers",
+      "helpText": "Maximum number of workers",
+      "isOptional": true
+    },
+    {
+      "name": "machine_type",
+      "label": "Machine Type",
+      "helpText": "GCE machine type for workers",
+      "isOptional": true
+    },
+    {
+      "name": "enable_streaming_engine",
+      "label": "Enable Streaming Engine",
+      "helpText": "Required for exactly-once semantics",
+      "isOptional": true
+    },
+    {
+      "name": "service_account_email",
+      "label": "Service Account Email",
+      "helpText": "Email of the service account",
+      "isOptional": true
+    }
+  ]
+}

@@ -1,0 +1,106 @@
+###############################################################################
+# ArgoCD AppProject — data-platform
+#
+# Defines the trust boundary for all GCP Data Platform applications.
+# Projects let us restrict which repos, clusters, and namespaces an
+# application can deploy to — and define RBAC policies for CI/CD tokens.
+#
+# Sync window design:
+#   - A broad "allow all" window covers the full week (automated syncs
+#     run at any time by default).
+#   - A "deny" window covers Friday 17:00–23:59 UTC to prevent deployments
+#     going in ahead of the weekend when engineers are offline.
+#   - Manual syncs remain available during the deny window for emergency
+#     rollbacks (manualSync: false on the deny window means CI cannot
+#     trigger a manual sync either — a human must log into ArgoCD UI).
+###############################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: data-platform
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: gcp-data-platform
+    managed-by: argocd
+spec:
+  description: "GCP Data Platform — ML prediction services and supporting infrastructure"
+
+  # ── Allowed Source Repositories ────────────────────────────────────────────
+  # Only these repos may supply manifests for applications in this project.
+  sourceRepos:
+    - https://github.com/REPLACE_ORG/gcp-data-platform.git
+    - https://argoproj.github.io/argo-helm
+
+  # ── Allowed Destinations ───────────────────────────────────────────────────
+  # Applications in this project may only deploy to these cluster+namespace
+  # combinations. Requests to deploy to other namespaces are rejected.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: predictor-staging
+    - server: https://kubernetes.default.svc
+      namespace: predictor-production
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+
+  # ── Cluster-Scoped Resources ────────────────────────────────────────────────
+  # Allow ArgoCD to create Namespace objects (needed for the CreateNamespace=true
+  # sync option on child applications).
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # ── Namespace-Scoped Resources ──────────────────────────────────────────────
+  # Allow all namespace-scoped resource types. Fine-grained control is done
+  # via K8s RBAC on the service accounts themselves, not here.
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+  # ── Project-Level RBAC ─────────────────────────────────────────────────────
+  roles:
+    - name: ci-role
+      description: >
+        Least-privilege role for Cloud Build CI pipelines. Allows syncing
+        and reading application status. Does NOT allow deleting apps,
+        modifying project settings, or accessing secrets.
+      policies:
+        # Allow CI to trigger a sync on any app in this project.
+        - p, proj:data-platform:ci-role, applications, sync, data-platform/*, allow
+        # Allow CI to read application state (for health checks post-deploy).
+        - p, proj:data-platform:ci-role, applications, get, data-platform/*, allow
+      jwtTokens: []  # Tokens are generated via: argocd proj role create-token data-platform ci-role
+
+  # ── Orphaned Resource Monitoring ───────────────────────────────────────────
+  # Warn when resources exist in a managed namespace that are not tracked by
+  # any Application in this project. Helps catch manual kubectl applies.
+  orphanedResources:
+    warn: true
+
+  # ── Sync Windows ───────────────────────────────────────────────────────────
+  syncWindows:
+    # Default: allow automated sync at any time during the work week and weekend.
+    - kind: allow
+      schedule: "* * * * *"
+      duration: 24h
+      applications:
+        - "*"
+      namespaces:
+        - "*"
+      clusters:
+        - "*"
+      manualSync: true
+
+    # Blackout: block automated (and CI-triggered) syncs on Friday evenings UTC.
+    # Engineers should not ship new versions right before the weekend.
+    # For emergency rollbacks during this window, a senior engineer must
+    # manually click Sync in the ArgoCD UI with their personal token.
+    - kind: deny
+      schedule: "0 17 * * 5"
+      duration: 7h
+      applications:
+        - "*"
+      namespaces:
+        - "*"
+      clusters:
+        - "*"
+      manualSync: false

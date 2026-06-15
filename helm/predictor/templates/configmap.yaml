@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "predictor.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "predictor.labels" . | nindent 4 }}
+data:
+  # predictor.py reads os.environ["GOOGLE_CLOUD_PROJECT"] (required)
+  GOOGLE_CLOUD_PROJECT: {{ .Values.config.gcpProject | quote }}
+  # Alias used by some GCP client libraries and legacy code
+  GCP_PROJECT: {{ .Values.config.gcpProject | quote }}
+  CLOUD_ML_REGION: {{ .Values.config.gcpRegion | quote }}
+  GCP_REGION: {{ .Values.config.gcpRegion | quote }}
+  # Feature Store
+  FEATURE_STORE_ID: {{ .Values.config.featureStoreId | quote }}
+  ENTITY_TYPE_ID: {{ .Values.config.entityTypeId | quote }}
+  # Model artifacts GCS path — predictor downloads model.xgb + preprocessor.pkl from here on startup
+  AIP_STORAGE_URI: {{ .Values.config.modelArtifactsGcs | quote }}
+  MODEL_VERSION: {{ .Values.config.modelVersion | quote }}
+  # Vertex AI endpoint (empty in staging — online endpoint not provisioned)
+  VERTEX_ENDPOINT_ID: {{ .Values.config.vertexEndpointId | quote }}
+  ENDPOINT_ID: {{ .Values.config.vertexEndpointId | quote }}
+  # BigQuery prediction logging
+  PREDICTION_LOGS_TABLE: {{ .Values.config.predictionLogsTable | quote }}
+  # Gunicorn / app config
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  GUNICORN_WORKERS: {{ .Values.config.workers | quote }}
+  REQUEST_TIMEOUT: {{ .Values.config.timeout | quote }}

@@ -1,0 +1,15 @@
+[
+  {"name": "request_id",       "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "user_id",          "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "model_version",    "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "endpoint_id",      "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "prediction_date",  "type": "DATE",      "mode": "REQUIRED"},
+  {"name": "predicted_at",     "type": "TIMESTAMP", "mode": "REQUIRED"},
+  {"name": "prediction_score", "type": "FLOAT64",   "mode": "REQUIRED"},
+  {"name": "prediction_label", "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "confidence",       "type": "FLOAT64",   "mode": "NULLABLE"},
+  {"name": "features_json",    "type": "JSON",      "mode": "NULLABLE"},
+  {"name": "latency_ms",       "type": "INTEGER",   "mode": "REQUIRED"},
+  {"name": "is_shadow",        "type": "BOOLEAN",   "mode": "REQUIRED"},
+  {"name": "traffic_tag",      "type": "STRING",    "mode": "NULLABLE", "description": "canary|production|shadow"}
+]

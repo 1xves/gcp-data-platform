@@ -1,0 +1,96 @@
+replicaCount: 3
+
+image:
+  # Artifact Registry repo: stg-ml-containers (staging) / prod-ml-containers (production)
+  # Override per environment via values-<env>.yaml
+  repository: us-central1-docker.pkg.dev/project-6db0f664-1423-47cb-86d/stg-ml-containers/predictor
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+  annotations: {}
+
+serviceAccount:
+  create: true
+  # Workload Identity annotation is populated per-environment, e.g.:
+  # iam.gke.io/gcp-service-account: predictor@<PROJECT_ID>.iam.gserviceaccount.com
+  annotations: {}
+  # If blank, defaults to the chart fullname (predictor.serviceAccountName helper)
+  name: ""
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "512Mi"
+  limits:
+    cpu: "1000m"
+    memory: "1Gi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+networkPolicy:
+  enabled: true
+
+config:
+  # Vertex AI endpoint — set when enable_online_endpoint = true and endpoint is deployed.
+  # Leave empty in staging (endpoint is gated off to avoid idle billing).
+  vertexEndpointId: ""
+  gcpProject: "project-6db0f664-1423-47cb-86d"
+  gcpRegion: "us-central1"
+  logLevel: "INFO"
+  workers: 4
+  timeout: 30
+  # Feature Store ID — Terraform: replace(var.resource_prefix, "-", "_") + "_feature_store"
+  # With resource_prefix="stg" → "stg_feature_store"
+  featureStoreId: "stg_feature_store"
+  entityTypeId: "user"
+  modelVersion: "staging-seed-v1"
+  # GCS path to model artifacts. Override per-environment. Path must contain model.xgb + preprocessor.pkl
+  modelArtifactsGcs: "gs://project-6db0f664-1423-47cb-86d-ml-artifacts/models/staging/seed"
+  predictionLogsTable: "project-6db0f664-1423-47cb-86d.stg_ml_features.prediction_logs"
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  failureThreshold: 3
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+affinity: {}
+tolerations: []
+nodeSelector: {}

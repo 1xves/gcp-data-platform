@@ -1,0 +1,21 @@
+[
+  {"name": "event_id",            "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "event_type",          "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "user_id",             "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "session_id",          "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "event_timestamp",     "type": "TIMESTAMP", "mode": "REQUIRED"},
+  {"name": "event_date",          "type": "DATE",      "mode": "REQUIRED"},
+  {"name": "schema_version",      "type": "INTEGER",   "mode": "REQUIRED"},
+  {"name": "producer_id",         "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "page_url",            "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "referrer",            "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "value_usd",           "type": "FLOAT64",   "mode": "NULLABLE"},
+  {"name": "search_query",        "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "country",             "type": "STRING",    "mode": "NULLABLE", "description": "Enriched from user profile"},
+  {"name": "plan_tier",           "type": "STRING",    "mode": "NULLABLE", "description": "Enriched: free|basic|pro|enterprise"},
+  {"name": "user_cohort",         "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "is_mobile",           "type": "BOOLEAN",   "mode": "NULLABLE"},
+  {"name": "session_sequence_num","type": "INTEGER",   "mode": "NULLABLE", "description": "Position of this event within the session"},
+  {"name": "processed_at",        "type": "TIMESTAMP", "mode": "REQUIRED"},
+  {"name": "pipeline_version",    "type": "STRING",    "mode": "NULLABLE", "description": "Dataflow template version for lineage"}
+]

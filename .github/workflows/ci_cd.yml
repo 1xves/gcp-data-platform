@@ -1,0 +1,278 @@
+name: GCP Data Platform CI/CD
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main]
+
+env:
+  PROJECT_ID:  ${{ secrets.GCP_PROJECT_ID }}
+  REGION:      us-central1
+  IMAGE_NAME:  event-processor
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 1: Code Quality (fast, runs on every PR)
+  # ────────────────────────────────────────────────────────────────────────────
+  lint-and-test:
+    name: Lint & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r pipelines/dataflow/requirements.txt
+          pip install pytest pytest-cov flake8 mypy
+
+      - name: Lint (flake8)
+        run: flake8 pipelines/ vertex_ai/ --max-line-length=100 --exclude=__pycache__
+
+      - name: Type check (mypy)
+        run: mypy pipelines/dataflow/ --ignore-missing-imports --no-error-summary
+
+      - name: Unit tests
+        run: pytest pipelines/dataflow/tests/ -v --cov=pipelines/dataflow --cov-report=xml --cov-fail-under=75
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 2: Terraform Plan (every PR to main)
+  # ────────────────────────────────────────────────────────────────────────────
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: lint-and-test
+    permissions:
+      contents: read
+      pull-requests: write  # To comment terraform plan on PR
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform init
+        working-directory: infrastructure/terraform
+        run: terraform init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: Terraform validate
+        working-directory: infrastructure/terraform
+        run: terraform validate
+
+      - name: Terraform plan
+        id: tf-plan
+        working-directory: infrastructure/terraform
+        run: |
+          terraform plan \
+            -var="project_id=$PROJECT_ID" \
+            -var="region=$REGION" \
+            -var="resource_prefix=staging" \
+            -no-color \
+            -out=tfplan.out 2>&1 | tee plan_output.txt
+
+      - name: Comment plan on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infrastructure/terraform/plan_output.txt', 'utf8');
+            const trimmed = plan.length > 65000 ? plan.slice(-65000) : plan;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan\n\`\`\`\n${trimmed}\n\`\`\``
+            });
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 3: Terraform Apply (main branch only — after PR merge)
+  # ────────────────────────────────────────────────────────────────────────────
+  terraform-apply:
+    name: Terraform Apply (Production)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: lint-and-test
+    environment: production  # Requires manual approval in GitHub Environments
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform init + apply
+        working-directory: infrastructure/terraform
+        run: |
+          terraform init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+          terraform apply \
+            -var="project_id=$PROJECT_ID" \
+            -var="region=$REGION" \
+            -var="resource_prefix=prod" \
+            -auto-approve
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 4: Build + Deploy Dataflow Flex Template (main branch only)
+  # ────────────────────────────────────────────────────────────────────────────
+  deploy-dataflow:
+    name: Deploy Dataflow Flex Template
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: terraform-apply
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP + Docker
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - run: gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
+
+      - name: Build and push Flex Template image
+        run: |
+          SHORT_SHA=${GITHUB_SHA::8}
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/prod-ml-containers/event-processor:${SHORT_SHA}"
+          docker build -t "$IMAGE" -f pipelines/dataflow/Dockerfile .
+          docker push "$IMAGE"
+
+          # Update Flex Template spec in GCS
+          gcloud dataflow flex-template build \
+            gs://${PROJECT_ID}-dataflow-staging/dataflow-templates/event-processor/template.json \
+            --image="$IMAGE" \
+            --sdk-language=PYTHON \
+            --metadata-file=pipelines/dataflow/flex_template_metadata.json
+
+          # Update running job (drain + restart with new template)
+          JOB_ID=$(gcloud dataflow jobs list \
+            --region=$REGION \
+            --filter="name:prod-event-processor AND state:Running" \
+            --format="value(id)" | head -1)
+
+          if [ -n "$JOB_ID" ]; then
+            gcloud dataflow jobs drain "$JOB_ID" --region=$REGION
+            echo "Draining job $JOB_ID — new job will start automatically from Terraform"
+          fi
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 5: Scheduled Model Retraining (triggered by workflow_dispatch or schedule)
+  # ────────────────────────────────────────────────────────────────────────────
+  retrain-model:
+    name: Trigger Model Retraining Pipeline
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Vertex AI SDK
+        run: pip install google-cloud-aiplatform kfp
+
+      - name: Submit Vertex AI Pipeline run
+        run: |
+          python vertex_ai/pipelines/run_pipeline.py \
+            --project_id=$PROJECT_ID \
+            --region=$REGION \
+            --trigger_reason="github_actions_manual"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 6: Build Dataflow Worker Image with Packer (main branch only)
+  # ────────────────────────────────────────────────────────────────────────────
+  packer-build:
+    name: Build Dataflow Worker Image
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: latest
+
+      - name: Packer init
+        run: packer init packer/dataflow-worker
+
+      - name: Packer build
+        run: |
+          packer build \
+            -var "image_tag=${{ github.sha }}" \
+            -var "gcp_project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -var-file=packer/dataflow-worker/variables.pkrvars.hcl \
+            packer/dataflow-worker/dataflow-worker.pkr.hcl
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 7: Update ArgoCD Image Tag and Sync Staging (after packer-build)
+  # ────────────────────────────────────────────────────────────────────────────
+  argocd-image-update:
+    name: Update ArgoCD Image Tag and Sync Staging
+    runs-on: ubuntu-latest
+    needs: [packer-build]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x argocd
+          sudo mv argocd /usr/local/bin/
+
+      - name: Login to ArgoCD
+        run: |
+          argocd login ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --grpc-web
+
+      - name: Update image tag in staging application
+        run: argocd app set predictor-staging -p image.tag=${{ github.sha }}
+
+      - name: Sync staging application
+        run: argocd app sync predictor-staging --timeout 300

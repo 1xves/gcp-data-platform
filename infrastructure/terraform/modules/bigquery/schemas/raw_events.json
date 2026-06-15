@@ -1,0 +1,14 @@
+[
+  {"name": "event_id",        "type": "STRING",    "mode": "REQUIRED", "description": "UUID v4 from producer — used for deduplication in Dataflow"},
+  {"name": "event_type",      "type": "STRING",    "mode": "REQUIRED", "description": "Enum: page_view|click|purchase|add_to_cart|search|error|session_start|session_end"},
+  {"name": "user_id",         "type": "STRING",    "mode": "NULLABLE", "description": "Nullable for anonymous events"},
+  {"name": "session_id",      "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "event_timestamp", "type": "TIMESTAMP", "mode": "REQUIRED", "description": "Event time (UTC) — Beam event time for windowing"},
+  {"name": "event_date",      "type": "DATE",      "mode": "REQUIRED", "description": "Partition key — derived from event_timestamp in Dataflow"},
+  {"name": "properties",      "type": "JSON",      "mode": "NULLABLE", "description": "Raw properties map as JSON string"},
+  {"name": "schema_version",  "type": "INTEGER",   "mode": "REQUIRED"},
+  {"name": "producer_id",     "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "environment",     "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "ingested_at",     "type": "TIMESTAMP", "mode": "REQUIRED", "description": "Dataflow write timestamp — processing time, not event time"},
+  {"name": "dataflow_job_id", "type": "STRING",    "mode": "NULLABLE", "description": "Dataflow job ID for lineage tracing"}
+]

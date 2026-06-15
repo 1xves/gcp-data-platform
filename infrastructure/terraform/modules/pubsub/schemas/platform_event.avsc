@@ -1,0 +1,69 @@
+{
+  "type": "record",
+  "name": "PlatformEvent",
+  "namespace": "com.platform.events.v1",
+  "doc": "Canonical event schema for the GCP data platform. All producers must conform to this schema.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 — globally unique identifier, used for deduplication in Dataflow"
+    },
+    {
+      "name": "event_type",
+      "type": {
+        "type": "enum",
+        "name": "EventType",
+        "symbols": ["page_view", "click", "purchase", "add_to_cart", "search", "error", "session_start", "session_end"]
+      },
+      "doc": "Enumerated event type — enforced at schema level to prevent unbounded cardinality"
+    },
+    {
+      "name": "user_id",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Nullable — null for anonymous pre-authentication events"
+    },
+    {
+      "name": "session_id",
+      "type": "string",
+      "doc": "Session identifier — used for session windowing in Dataflow"
+    },
+    {
+      "name": "timestamp_ms",
+      "type": "long",
+      "logicalType": "timestamp-millis",
+      "doc": "Event timestamp in Unix epoch milliseconds (UTC). Used as event time in Beam."
+    },
+    {
+      "name": "properties",
+      "type": {
+        "type": "map",
+        "values": "string"
+      },
+      "default": {},
+      "doc": "Flexible key-value bag for event-specific properties. Values are strings; Dataflow casts to typed columns."
+    },
+    {
+      "name": "schema_version",
+      "type": "int",
+      "default": 1,
+      "doc": "Avro schema version number — used for backward/forward compatibility routing"
+    },
+    {
+      "name": "producer_id",
+      "type": "string",
+      "doc": "Identifies the producing service (e.g., web-frontend, ios-app, payment-service)"
+    },
+    {
+      "name": "environment",
+      "type": {
+        "type": "enum",
+        "name": "Environment",
+        "symbols": ["production", "staging", "development"]
+      },
+      "default": "production",
+      "doc": "Environment tag — staging/development events are filtered before BigQuery write"
+    }
+  ]
+}

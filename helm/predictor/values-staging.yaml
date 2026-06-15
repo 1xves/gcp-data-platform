@@ -1,0 +1,35 @@
+# Staging environment overrides — lighter resources, single replica, debug logging.
+# Apply with: helm upgrade --install predictor ./helm/predictor \
+#   -f helm/predictor/values.yaml \
+#   -f helm/predictor/values-staging.yaml \
+#   --namespace predictor-staging
+
+replicaCount: 1
+
+image:
+  tag: "latest"
+
+serviceAccount:
+  annotations:
+    # Workload Identity: binds this KSA to the GCP SA created by the GKE Terraform module.
+    # SA email is output from: terraform output -module=gke predictor_service_account_email
+    iam.gke.io/gcp-service-account: stg-predictor@project-6db0f664-1423-47cb-86d.iam.gserviceaccount.com
+
+resources:
+  requests:
+    cpu: "125m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+autoscaling:
+  minReplicas: 1
+  maxReplicas: 3
+
+podDisruptionBudget:
+  minAvailable: 1
+
+config:
+  logLevel: "DEBUG"
+  workers: 2

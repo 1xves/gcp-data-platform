@@ -1,0 +1,49 @@
+# ─── Python ──────────────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ─── Terraform ───────────────────────────────────────────────────────────────
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+# Keep example tfvars; ignore any local real-value overrides
+*.local.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ─── Secrets / credentials ───────────────────────────────────────────────────
+*.pem
+*.key
+*-key.json
+credentials*.json
+application_default_credentials.json
+.env
+.env.*
+!.env.example
+
+# ─── OS / editor ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

@@ -1,0 +1,198 @@
+# =============================================================================
+# Cloud Monitoring Alert Policies — GCP Data Platform
+# Apply with: gcloud alpha monitoring policies import alert_policies.yaml
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Alert 1: Pub/Sub DLQ Spike (schema failures, validation rejections)
+# Trigger: >100 messages in DLQ within 5 minutes
+# Severity: WARNING → page on-call if sustained > 30 minutes
+# ─────────────────────────────────────────────────────────────────────────────
+- displayName: "[Platform] Pub/Sub DLQ Message Spike"
+  documentation:
+    content: |
+      ## DLQ Spike Alert
+
+      **What this means**: More than 100 messages have been routed to the dead-letter
+      topic in the last 5 minutes. This usually indicates:
+
+      1. **Schema mismatch** — a producer published events with a new/unknown schema version
+      2. **Validation failures** — event_type, user_id, or timestamp out of bounds
+      3. **Producer bug** — malformed Avro encoding
+
+      ## Immediate Actions
+      1. Check Dataflow logs: `gcloud logging read "resource.type=dataflow_step AND textPayload:DLQ"`
+      2. Inspect DLQ messages: `gcloud pubsub subscriptions pull platform-events-dlq-sub --limit=10`
+      3. Identify failing schema_version from DLQ message attributes
+      4. Coordinate with producer team if schema change is intentional
+
+      ## Runbook: platform-runbooks/dlq-spike.md
+  combiner: OR
+  conditions:
+    - displayName: DLQ message count > 100 in 5 minutes
+      conditionThreshold:
+        filter: >
+          resource.type="pubsub_subscription"
+          AND metric.type="pubsub.googleapis.com/subscription/num_undelivered_messages"
+          AND resource.labels.subscription_id="platform-events-dlq-sub"
+        comparison: COMPARISON_GT
+        thresholdValue: 100
+        duration: 300s
+        aggregations:
+          - alignmentPeriod: 300s
+            perSeriesAligner: ALIGN_MAX
+  alertStrategy:
+    notificationRateLimit:
+      period: 1800s  # Re-notify every 30 minutes while firing
+  notificationChannels:
+    - projects/${project_id}/notificationChannels/${pagerduty_channel_id}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Alert 2: Dataflow Pipeline Lag > 5 minutes
+# Trigger: system lag (watermark delay) exceeds 5 minutes
+# Severity: CRITICAL — data freshness SLO at risk
+# ─────────────────────────────────────────────────────────────────────────────
+- displayName: "[Platform] Dataflow Pipeline Lag Critical"
+  documentation:
+    content: |
+      ## Dataflow Lag Alert
+
+      The streaming pipeline watermark is more than 5 minutes behind real-time.
+      Data freshness SLO (< 30s p99) is at risk.
+
+      ## Likely causes
+      - Pub/Sub backlog building up faster than Dataflow can process
+      - Auto-scaling failed to add workers (quota issue?)
+      - Enrichment side input loading slowly (GCS connection issue?)
+      - BigQuery write failures causing retries
+
+      ## Immediate Actions
+      1. Check worker count: Dataflow UI → pipeline → Workers
+      2. Check system lag graph in Dataflow UI
+      3. Verify BigQuery write errors in job logs
+      4. If scaling stuck: update maxWorkers and redeploy template
+  combiner: OR
+  conditions:
+    - displayName: Dataflow system lag > 300s
+      conditionThreshold:
+        filter: >
+          resource.type="dataflow_job"
+          AND metric.type="dataflow.googleapis.com/job/system_lag"
+          AND resource.labels.job_name=monitoring.regex.full_match("platform-event-processor.*")
+        comparison: COMPARISON_GT
+        thresholdValue: 300  # 5 minutes in seconds
+        duration: 120s
+        aggregations:
+          - alignmentPeriod: 60s
+            perSeriesAligner: ALIGN_MAX
+  notificationChannels:
+    - projects/${project_id}/notificationChannels/${pagerduty_channel_id}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Alert 3: Dataflow Worker Error Rate Spike
+# ─────────────────────────────────────────────────────────────────────────────
+- displayName: "[Platform] Dataflow Worker Error Rate High"
+  documentation:
+    content: |
+      Dataflow workers are encountering high error rates. Check Dataflow job logs
+      for exceptions, OOM errors, or I/O failures.
+  combiner: OR
+  conditions:
+    - displayName: Dataflow worker error rate > 1%
+      conditionThreshold:
+        filter: >
+          resource.type="dataflow_job"
+          AND metric.type="dataflow.googleapis.com/job/element_count"
+          AND metric.labels.step=monitoring.regex.full_match(".*Error.*|.*DLQ.*")
+        comparison: COMPARISON_GT
+        thresholdValue: 100
+        duration: 60s
+        aggregations:
+          - alignmentPeriod: 60s
+            perSeriesAligner: ALIGN_RATE
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Alert 4: BigQuery Slot Utilization > 90%
+# High slot utilization → dashboard queries slow, DML jobs queued
+# ─────────────────────────────────────────────────────────────────────────────
+- displayName: "[Platform] BigQuery Slot Utilization Critical"
+  documentation:
+    content: |
+      BigQuery slot utilization exceeds 90% of reserved capacity (500 slots).
+      Analytics queries may queue or fail.
+
+      ## Actions
+      1. Identify runaway queries: `SELECT * FROM INFORMATION_SCHEMA.JOBS ORDER BY slot_ms DESC LIMIT 20`
+      2. Cancel long-running jobs if user-initiated: `bq cancel <job_id>`
+      3. Temporarily increase reservation if sustained: contact data platform team
+  combiner: OR
+  conditions:
+    - displayName: BQ slot utilization > 90%
+      conditionThreshold:
+        filter: >
+          resource.type="bigquery_project"
+          AND metric.type="bigquery.googleapis.com/storage/table_count"
+        comparison: COMPARISON_GT
+        thresholdValue: 450  # 90% of 500 slots
+        duration: 300s
+        aggregations:
+          - alignmentPeriod: 300s
+            perSeriesAligner: ALIGN_MAX
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Alert 5: Model Serving P99 Latency > 100ms
+# ─────────────────────────────────────────────────────────────────────────────
+- displayName: "[Platform] Vertex AI Endpoint P99 Latency Exceeded"
+  documentation:
+    content: |
+      Online prediction endpoint P99 latency exceeds 100ms SLO.
+
+      ## Actions
+      1. Check Feature Store online serving latency (should be < 10ms)
+      2. Check endpoint replica count — may need manual scale-out
+      3. Check for model inference memory pressure (OOM → slow GC)
+      4. If Feature Store is slow: check feature_store_read_latency metric
+  combiner: OR
+  conditions:
+    - displayName: Prediction P99 latency > 100ms
+      conditionThreshold:
+        filter: >
+          resource.type="aiplatform.googleapis.com/Endpoint"
+          AND metric.type="aiplatform.googleapis.com/prediction/online/response_latencies"
+        comparison: COMPARISON_GT
+        thresholdValue: 100  # milliseconds
+        duration: 120s
+        aggregations:
+          - alignmentPeriod: 60s
+            perSeriesAligner: ALIGN_PERCENTILE_99
+  notificationChannels:
+    - projects/${project_id}/notificationChannels/${pagerduty_channel_id}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Alert 6: Vertex AI Endpoint Error Rate > 0.5%
+# ─────────────────────────────────────────────────────────────────────────────
+- displayName: "[Platform] Vertex AI Endpoint Error Rate High"
+  documentation:
+    content: |
+      Online prediction endpoint 5xx error rate exceeds 0.5%.
+      Downstream product features are receiving prediction failures.
+
+      ## Immediate Action
+      1. Check endpoint logs: Cloud Logging → resource: AI Platform Endpoint
+      2. If model OOM: redeploy with larger machine type
+      3. Emergency rollback: `gcloud ai endpoints deploy-model ENDPOINT_ID --model=PREV_VERSION`
+  combiner: OR
+  conditions:
+    - displayName: Endpoint 5xx error rate > 0.5%
+      conditionThreshold:
+        filter: >
+          resource.type="aiplatform.googleapis.com/Endpoint"
+          AND metric.type="aiplatform.googleapis.com/prediction/online/error_count"
+        comparison: COMPARISON_GT
+        thresholdValue: 0.005
+        duration: 120s
+        aggregations:
+          - alignmentPeriod: 60s
+            perSeriesAligner: ALIGN_RATE
+  notificationChannels:
+    - projects/${project_id}/notificationChannels/${pagerduty_channel_id}

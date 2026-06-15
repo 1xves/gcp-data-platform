@@ -1,0 +1,302 @@
+# GCP ML Data Platform
+
+A production-grade machine learning data platform built on Google Cloud Platform. The system ingests real-time user behavior events, processes them through a streaming pipeline, generates churn risk predictions using an XGBoost model, and serves predictions via a low-latency REST API — all managed as infrastructure-as-code with automated CI/CD.
+
+Built as a portfolio project to demonstrate end-to-end cloud engineering and DevOps skills on GCP.
+
+---
+
+## Architecture
+
+```
+                         ┌─────────────────────────────────────────────────────┐
+                         │                    GCP Project                      │
+                         │                                                     │
+  Event Producers        │  Ingestion          Processing         Storage      │
+  ─────────────          │  ─────────          ──────────         ───────      │
+                         │                                                     │
+  Web / Mobile App  ────►│  Pub/Sub   ────►   Dataflow      ────► BigQuery    │
+  (user events)          │  Topic              Flex Template       bronze /    │
+                         │                     (Apache Beam)       silver /    │
+                         │  Dead-Letter         │                  gold        │
+                         │  Topic  ◄────────────┘                             │
+                         │  (failed msgs)                                      │
+                         │                                                     │
+                         │  ML Layer                                           │
+                         │  ────────                                           │
+                         │                                                     │
+                         │  Vertex AI           Vertex AI    Cloud             │
+                         │  Feature Store ◄──── Training  ◄─ Scheduler        │
+                         │  (online serving)    Pipeline      (nightly)        │
+                         │       │                                             │
+                         │       ▼                                             │
+                         │  Cloud Run  ◄────── Artifact Registry              │
+                         │  Predictor          (Docker images)                │
+                         │  (/v1/predict)                                      │
+                         │       │                                             │
+                         │       └──────────────────────────► BigQuery         │
+                         │                                    prediction_logs  │
+                         │                                                     │
+                         │  Infrastructure                                     │
+                         │  ──────────────                                     │
+                         │  VPC (private subnets)    Cloud Monitoring          │
+                         │  Cloud NAT                Billing Budgets           │
+                         │  IAM + Workload Identity  Secret Manager            │
+                         └─────────────────────────────────────────────────────┘
+                                           │
+                         GitHub Actions CI/CD
+                         PR → validate + plan
+                         Merge → build + push + deploy
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Notes |
+|-------|-----------|-------|
+| Infrastructure as Code | Terraform 1.5+ | Modular, multi-environment, remote GCS state |
+| Event Ingestion | Cloud Pub/Sub | Dead-letter topic, configurable retention |
+| Stream Processing | Dataflow Flex Template (Apache Beam) | Validate → deduplicate → enrich → BigQuery |
+| Data Warehouse | BigQuery | Bronze/silver/gold layers, partitioned tables, slot reservations |
+| ML Feature Store | Vertex AI Feature Store | Online + offline serving, training-serving consistency |
+| Model Training | Vertex AI Custom Training | XGBoost, Cloud Scheduler nightly retraining |
+| Model Serving | Cloud Run | Scales to zero, $0 idle cost, live HTTPS endpoint |
+| Container Registry | Artifact Registry | Docker images for Dataflow template and predictor |
+| CI/CD | GitHub Actions | Workload Identity Federation (no stored keys), plan-on-PR, deploy-on-merge |
+| Networking | VPC + Cloud NAT + Private Google Access | All workers on private IPs |
+| IAM | Service accounts + Workload Identity | Least-privilege, no user-managed keys |
+| Monitoring | Cloud Monitoring + Billing Budgets | Alerting policies, dashboard, spend alerts |
+| Kubernetes (demo) | GKE Standard + Helm | Terraform module and Helm chart in repo — see `infrastructure/terraform/modules/gke/` and `helm/predictor/` |
+
+---
+
+## Repository Structure
+
+```
+gcp-data-platform/
+├── infrastructure/
+│   └── terraform/
+│       ├── main.tf                 # Root — wires all modules together
+│       ├── variables.tf            # All input variables with validation
+│       ├── outputs.tf              # Useful outputs: URLs, SA emails
+│       ├── staging.tfvars          # Staging environment values
+│       └── modules/
+│           ├── networking/         # VPC, subnets, Cloud NAT, Private Google Access
+│           ├── iam/                # Service accounts, IAM bindings
+│           ├── pubsub/             # Topics, subscriptions, dead-letter
+│           ├── dataflow/           # Flex Template job, GCS template staging
+│           ├── bigquery/           # Datasets, tables, slot reservations
+│           ├── vertex_ai/          # Feature Store, training pipeline, online endpoint
+│           ├── gke/                # Private GKE cluster, node pool, Workload Identity
+│           ├── cloud_run/          # Predictor serving (replaces GKE in staging)
+│           └── monitoring/         # Alert policies, notification channels
+├── vertex_ai/
+│   ├── serving/
+│   │   ├── predictor.py            # Flask API — feature fetch, inference, BQ logging
+│   │   ├── Dockerfile              # Cloud Run / GKE compatible container
+│   │   └── requirements.txt
+│   └── training/
+│       └── trainer/
+│           └── model.py            # ChurnRiskModel — XGBoost + preprocessor
+├── helm/
+│   └── predictor/                  # Helm chart for GKE deployment (Kubernetes demo)
+├── scripts/
+│   ├── bootstrap-staging.sh        # Phased deploy script (4 phases)
+│   ├── phase4-test.sh              # GKE deploy + smoke test + teardown
+│   └── seed_model.py               # Generates minimal XGBoost model for staging
+└── .github/
+    └── workflows/
+        ├── ci.yml                  # PR: fmt check, validate, plan, docker build
+        └── cd.yml                  # Merge: build, push, deploy to Cloud Run
+```
+
+---
+
+## Key Design Decisions
+
+**Modular Terraform over monolithic config.** Every infrastructure concern (networking, IAM, data, ML, serving) is a separate module with its own `variables.tf` and `outputs.tf`. Modules are composed in the root `main.tf`. This makes each layer independently testable and reusable across environments.
+
+**Training-serving consistency via Feature Store.** The same features used for model training (fetched offline from Feature Store) are fetched online at prediction time. There is no separate feature computation path — the most common source of training-serving skew in production ML systems.
+
+**Cloud Run over GKE for portfolio serving cost.** GKE Standard costs ~$140-280/month in staging (cluster management fee + nodes). Cloud Run costs $0 at idle and roughly $0 per demo request within the free tier. The GKE Terraform module and Helm chart remain in the repo to demonstrate Kubernetes expertise — they just aren't deployed continuously.
+
+**Workload Identity Federation for CI/CD auth.** GitHub Actions authenticates to GCP via OIDC tokens, not long-lived service account JSON keys. No secrets to rotate, no credentials that can leak from the repo.
+
+**`on_delete = "cancel"` for staging Dataflow.** Streaming Dataflow jobs with `on_delete = "drain"` wait indefinitely for in-flight messages before Terraform can finish. In staging, this caused a 2h24m hang. Staging uses `"cancel"` for instant teardown; production uses `"drain"` to avoid data loss. The value is a Terraform variable set per environment in `staging.tfvars` / `production.tfvars`.
+
+---
+
+## Cost Model
+
+| State | Monthly Cost | What's Running |
+|-------|-------------|----------------|
+| Fully parked | ~$35-45 | Cloud NAT, GCS, Artifact Registry, BQ schema |
+| Development (on-demand) | ~$50-80 | Above + Dataflow during active sessions |
+| Demo-ready | ~$40-50 | Above + 1 warm Cloud Run instance (~$1.50/mo) |
+| Full staging always-on | ~$380-520 | Above + Dataflow streaming + GKE always-on |
+
+The environment parks at near-zero cost between sessions via feature flags in `staging.tfvars`:
+
+```hcl
+create_dataflow_job      = false  # Stops streaming job — $0 compute
+enable_gke               = false  # Destroys cluster — $0 nodes + management fee
+predictor_min_instances  = 0      # Cloud Run scales to zero — $0 idle
+```
+
+Billing budget alerts fire at 25%, 50%, and 100% of a configurable monthly cap, with a second alert at 100% of forecasted spend — configured via Terraform in `main.tf`.
+
+---
+
+## Cost Incident & Resolution
+
+**What happened.** During Phase 4 development (GKE predictor serving validation), the GKE cluster ran for approximately 5 days without teardown, accumulating $336.83 in charges across the billing period — a forecasted rate of $657/month. The billing spike was not caught in real time because no billing budget alerts had been configured in the initial Terraform deployment.
+
+**Root causes identified:**
+
+*No billing budget in Phase 1 Terraform.* The initial infrastructure deployment did not include `google_billing_budget` resources. Without alerts, there was no automated signal when daily spend exceeded expected levels.
+
+*GKE idle cost is substantial.* A GKE Standard cluster incurs a $73/month cluster management fee plus node costs whether or not workloads are scheduled. Running a cluster for validation and leaving it up between sessions compounded quickly.
+
+*`on_delete = "drain"` on a streaming Dataflow job.* A teardown attempt hung for 2h24m waiting for a running streaming job to drain. This extended the billing window and blocked teardown.
+
+**What was fixed:**
+
+- Added `google_billing_budget` to Terraform with alerts at 25%, 50%, and 100% of a monthly cap, wired to Cloud Monitoring email notifications
+- Changed Dataflow `on_delete` to a per-environment variable — `staging.tfvars` sets `"cancel"`, production uses `"drain"`
+- Replaced GKE with Cloud Run as the staging serving layer — $0 idle vs $140-280/month
+- Added `trap teardown EXIT` to the Phase 4 test script so teardown runs on success, failure, and Ctrl+C
+- Set `enable_gke = false` as the committed default in `staging.tfvars`
+- Audited all GCP projects on the billing account for unexpected running resources
+
+**The takeaway.** Billing governance is infrastructure, not an afterthought. Budget alerts, cost-aware architecture decisions, and ephemeral-by-default resource patterns should be in the initial design. That lesson is reflected in this project's current architecture.
+
+---
+
+## CI/CD Pipeline
+
+**`ci.yml` — runs on every PR:**
+- `terraform fmt -check` — enforces consistent HCL formatting
+- `terraform validate` — catches syntax errors and missing variables
+- `terraform plan` — posts the full diff as a PR comment
+- Docker build — verifies the predictor image compiles clean
+- Predictor unit tests — validates prediction logic without live GCP access
+
+**`cd.yml` — runs on merge to main:**
+- Builds predictor Docker image tagged with git SHA (immutable, traceable)
+- Pushes to Artifact Registry
+- Deploys to Cloud Run via `gcloud run deploy` (zero-downtime rolling update)
+- Smoke tests the live endpoint: `/healthz`, `/readyz`, `/v1/predict`
+- Posts deployment summary to the commit
+
+Authentication uses Workload Identity Federation — no service account JSON keys stored as GitHub secrets.
+
+---
+
+## How to Deploy
+
+### Prerequisites
+
+- GCP project with billing enabled
+- `gcloud` CLI authenticated
+- Terraform >= 1.5
+- Docker with `linux/amd64` build support
+
+### 1. Initialize Terraform
+
+```bash
+cd infrastructure/terraform
+terraform init -backend-config="bucket=${PROJECT_ID}-tf-state"
+```
+
+### 2. Deploy base infrastructure
+
+```bash
+terraform apply -var-file=staging.tfvars
+```
+
+### 3. Build and push the predictor image
+
+```bash
+cd ../..
+docker build --platform linux/amd64 \
+  -t us-central1-docker.pkg.dev/${PROJECT_ID}/stg-ml-containers/predictor:latest \
+  -f vertex_ai/serving/Dockerfile .
+docker push us-central1-docker.pkg.dev/${PROJECT_ID}/stg-ml-containers/predictor:latest
+```
+
+### 4. Update staging.tfvars and redeploy
+
+```hcl
+predictor_image      = "us-central1-docker.pkg.dev/<PROJECT>/stg-ml-containers/predictor:latest"
+create_dataflow_job  = true
+```
+
+```bash
+terraform apply -var-file=staging.tfvars
+terraform output predictor_url   # Live HTTPS endpoint
+```
+
+### 5. Test the live endpoint
+
+```bash
+SERVICE_URL=$(terraform output -raw predictor_url)
+
+curl ${SERVICE_URL}/healthz
+# {"status": "ok", "model_version": "staging-seed-v1"}
+
+curl -X POST ${SERVICE_URL}/v1/predict \
+  -H "Content-Type: application/json" \
+  -d '{"instances": ["user_001", "user_002"]}'
+# {"predictions": [{"user_id": "user_001", "churn_risk_score": 0.72, "label": "high_risk"}, ...]}
+```
+
+### Park the environment
+
+```bash
+# staging.tfvars: create_dataflow_job = false
+# predictor_min_instances = 0 (Cloud Run already scales to zero automatically)
+terraform apply -var-file=staging.tfvars
+```
+
+---
+
+## GitHub Actions Setup
+
+Add these secrets under **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+|--------|-------|
+| `GCP_PROJECT_ID` | Your GCP project ID |
+| `GCP_REGION` | `us-central1` |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | From WIF setup (see below) |
+| `GCP_SERVICE_ACCOUNT` | `github-actions@<PROJECT>.iam.gserviceaccount.com` |
+| `TF_STATE_BUCKET` | `<PROJECT>-tf-state` |
+| `BILLING_ACCOUNT_ID` | Your GCP billing account ID |
+| `ARTIFACT_REGISTRY_REPO` | `stg-ml-containers` |
+
+**Workload Identity Federation setup (one-time):**
+
+```bash
+# Create WIF pool
+gcloud iam workload-identity-pools create "github-actions" \
+  --project="${PROJECT_ID}" --location="global"
+
+# Create OIDC provider
+gcloud iam workload-identity-pools providers create-oidc "github" \
+  --project="${PROJECT_ID}" \
+  --location="global" \
+  --workload-identity-pool="github-actions" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --issuer-uri="https://token.actions.githubusercontent.com"
+
+# Allow this repo to impersonate the CI/CD service account
+gcloud iam service-accounts add-iam-policy-binding \
+  "github-actions@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-actions/attribute.repository/YOUR_GITHUB_USERNAME/gcp-data-platform"
+```
+
+---
+
+*Terraform · Apache Beam · Dataflow · BigQuery · Vertex AI · Cloud Run · GitHub Actions · Workload Identity Federation*

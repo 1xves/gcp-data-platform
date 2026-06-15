@@ -1,0 +1,112 @@
+###############################################################################
+# ArgoCD Application — predictor-production
+#
+# Deploys the predictor Helm chart to the predictor-production namespace.
+#
+# Production differs from staging in four critical ways:
+#
+#   1. prune: false — resources are NEVER automatically deleted from production.
+#      Removing a manifest from Git will not delete the live resource.
+#      A human must explicitly click "Prune" in the ArgoCD UI after reviewing
+#      what will be removed. This prevents an accidental git revert or a bad
+#      PR from nuking production workloads.
+#
+#   2. No retry block — if a sync fails in production, ArgoCD stops and alerts.
+#      A human must investigate before re-triggering. Auto-retry would mask
+#      the failure and make debugging harder.
+#
+#   3. RespectIgnoreDifferences=true sync option — ensures that fields listed
+#      in ignoreDifferences are not touched during sync, not just during drift
+#      detection. This is especially important in production where the HPA
+#      may have tuned replicas to a high value under load.
+#
+#   4. selfHeal: true is still enabled — if someone applies a change directly
+#      to production (bypassing GitOps), ArgoCD will revert it. This enforces
+#      the GitOps contract: Git is the only source of truth.
+#
+# Promotion workflow:
+#   Production deploys are triggered by updating values-production.yaml
+#   (specifically image.tag) in a PR. The PR must be reviewed and merged
+#   by a human. CI cannot force-push image tags to production.
+###############################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: predictor-production
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: gcp-data-platform
+    environment: production
+    managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Notifications — alert on both success and failure in production.
+    # #deploys-production is a higher-signal channel monitored by on-call.
+    notifications.argoproj.io/subscribe.on-sync-succeeded.slack: deploys-production
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: deploys-production
+    notifications.argoproj.io/subscribe.on-health-degraded.slack: incidents
+spec:
+  project: data-platform
+
+  # ── Source ─────────────────────────────────────────────────────────────────
+  source:
+    repoURL: https://github.com/REPLACE_ORG/gcp-data-platform.git
+    path: helm/predictor
+    targetRevision: HEAD
+
+    helm:
+      # Base values + production overlay. values-production.yaml sets higher
+      # resource limits, replica counts, and the production image tag.
+      valueFiles:
+        - values.yaml
+        - values-production.yaml
+
+      # The image.tag is managed via PR to values-production.yaml, not via
+      # a CI parameter override (unlike staging). This keeps the Git history
+      # as the authoritative record of what was deployed to production and when.
+      parameters:
+        - name: image.tag
+          value: latest  # This should always be overridden in values-production.yaml
+
+  # ── Destination ────────────────────────────────────────────────────────────
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: predictor-production
+
+  # ── Sync Policy ────────────────────────────────────────────────────────────
+  syncPolicy:
+    automated:
+      # prune: false — production resources are never auto-deleted.
+      # A human must review and manually trigger pruning in the ArgoCD UI.
+      prune: false
+      # selfHeal: true — drift from Git is still detected and reverted.
+      # This ensures production stays in the known-good state from Git.
+      selfHeal: true
+
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - ApplyOutOfSyncOnly=true
+      # RespectIgnoreDifferences: during sync, do not touch the fields listed
+      # in ignoreDifferences. Critical for HPA-managed replicas in production.
+      - RespectIgnoreDifferences=true
+
+    # No retry block for production — failures must be investigated by a human
+    # before re-syncing. ArgoCD will surface the error in the UI and via
+    # notifications. Do not add a retry block here.
+
+  # ── Ignore Differences ────────────────────────────────────────────────────
+  # Same as staging — prevent fights with the HPA controller.
+  # In production, RespectIgnoreDifferences=true above means these fields
+  # are also left alone during sync operations, not just drift reporting.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+      jqPathExpressions:
+        - .status

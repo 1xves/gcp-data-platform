@@ -1,0 +1,31 @@
+# Production environment overrides — full HA, boosted limits, observability annotations.
+# Apply with: helm upgrade --install predictor ./helm/predictor \
+#   -f helm/predictor/values.yaml \
+#   -f helm/predictor/values-production.yaml \
+#   --namespace predictor-production
+
+replicaCount: 5
+
+serviceAccount:
+  annotations:
+    iam.gke.io/gcp-service-account: predictor@REPLACE_PROJECT_ID.iam.gserviceaccount.com
+
+resources:
+  requests:
+    cpu: "375m"
+    memory: "768Mi"
+  limits:
+    cpu: "1500m"
+    memory: "1536Mi"
+
+autoscaling:
+  minReplicas: 5
+  maxReplicas: 20
+
+podDisruptionBudget:
+  minAvailable: 4
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"

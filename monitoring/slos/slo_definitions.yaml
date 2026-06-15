@@ -1,0 +1,79 @@
+# =============================================================================
+# Service Level Objectives (SLOs) — GCP Data Platform
+# These SLOs define the error budget and reliability targets for each component.
+# =============================================================================
+
+slos:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # SLO 1: Event Processing Freshness
+  # SLI: % of time pipeline lag < 30 seconds
+  # Target: 99.5% (error budget: 21.9 hours/month)
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: event_processing_freshness
+    display_name: "Event Processing Freshness (p99 lag < 30s)"
+    service: data-platform
+    goal: 0.995  # 99.5%
+    rolling_period_days: 30
+    request_based_sli:
+      good_total_ratio:
+        good_service_filter: >
+          metric.type="dataflow.googleapis.com/job/system_lag"
+          AND metric.label.value < 30
+        total_service_filter: >
+          metric.type="dataflow.googleapis.com/job/system_lag"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # SLO 2: Prediction Serving Latency
+  # SLI: % of prediction requests with P99 latency < 100ms
+  # Target: 99.9% (error budget: 43.8 minutes/month)
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: prediction_serving_latency
+    display_name: "Prediction Serving P99 Latency < 100ms"
+    service: data-platform
+    goal: 0.999  # 99.9%
+    rolling_period_days: 30
+    request_based_sli:
+      good_total_ratio:
+        good_service_filter: >
+          metric.type="aiplatform.googleapis.com/prediction/online/response_latencies"
+          AND metric.label.percentile="99"
+          AND metric.label.value < 100
+        total_service_filter: >
+          metric.type="aiplatform.googleapis.com/prediction/online/response_latencies"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # SLO 3: DLQ Rate (data quality)
+  # SLI: < 0.1% of events routed to DLQ
+  # Target: 99.9% good events (0.1% tolerance for schema violations, infra noise)
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: event_dlq_rate
+    display_name: "Event DLQ Rate < 0.1%"
+    service: data-platform
+    goal: 0.999
+    rolling_period_days: 30
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # SLO 4: Training Pipeline Success Rate
+  # SLI: % of daily retraining pipeline runs that complete with gate pass
+  # Target: 95% (allows ~1.5 failed runs/month)
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: training_pipeline_success_rate
+    display_name: "Daily Model Retraining Pipeline Success Rate"
+    service: data-platform
+    goal: 0.95
+    rolling_period_days: 30
+
+# Error Budget Burn Rate Alerts
+burn_rate_alerts:
+  - slo: prediction_serving_latency
+    short_window_minutes: 60
+    long_window_minutes: 360
+    burn_rate_threshold: 14.4  # Consumes 100% of monthly budget in 2 hours
+    severity: CRITICAL
+
+  - slo: event_processing_freshness
+    short_window_minutes: 60
+    long_window_minutes: 360
+    burn_rate_threshold: 6.0  # Consumes 100% of monthly budget in 5 hours
+    severity: WARNING

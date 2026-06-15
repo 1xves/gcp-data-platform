@@ -1,0 +1,163 @@
+###############################################################################
+# ArgoCD Bootstrap
+#
+# Apply this file ONCE to bootstrap ArgoCD into a fresh GKE cluster:
+#
+#   Step 1 — Create the namespace and apply this manifest:
+#     kubectl apply -f gitops/argocd/bootstrap/argocd-install.yaml
+#
+#   Step 2 — Install ArgoCD itself (official manifests, pinned version):
+#     kubectl apply -n argocd \
+#       -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.10.0/manifests/install.yaml
+#
+#   Step 3 — Wait for ArgoCD to be ready:
+#     kubectl rollout status deployment/argocd-server -n argocd --timeout=120s
+#
+#   Step 4 — Retrieve the initial admin password:
+#     kubectl get secret argocd-initial-admin-secret -n argocd \
+#       -o jsonpath='{.data.password}' | base64 -d; echo
+#
+#   Step 5 — Log in and change the password:
+#     argocd login <ARGOCD_SERVER> --username admin --password <INITIAL_PW>
+#     argocd account update-password
+#
+#   Step 6 — Register the Git repository (if private):
+#     argocd repo add https://github.com/REPLACE_ORG/gcp-data-platform.git \
+#       --username <USER> --password <TOKEN>
+#
+# After this file is applied and ArgoCD is running, the root Application
+# below (data-platform-root) will sync all Application manifests from
+# gitops/argocd/applications/ automatically (App of Apps pattern).
+###############################################################################
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    managed-by: terraform-bootstrap
+
+---
+###############################################################################
+# Bootstrap AppProject — data-platform
+#
+# Embedded here so that it exists before the root Application tries to
+# create child Applications that reference it. Once ArgoCD is managing
+# gitops/argocd/projects/ via the root app, this resource will be reconciled
+# by ArgoCD itself and kept in sync from projects/data-platform.yaml.
+###############################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: data-platform
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+  labels:
+    app.kubernetes.io/part-of: gcp-data-platform
+spec:
+  description: "GCP Data Platform — ML prediction services and supporting infrastructure"
+
+  sourceRepos:
+    - https://github.com/REPLACE_ORG/gcp-data-platform.git
+    - https://argoproj.github.io/argo-helm
+
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: predictor-staging
+    - server: https://kubernetes.default.svc
+      namespace: predictor-production
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+
+  # Allow ArgoCD to create Namespace resources (needed for CreateNamespace=true sync option).
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # Allow all namespace-scoped resources within approved namespaces.
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+  roles:
+    - name: ci-role
+      description: "Read and sync access for CI pipelines (Cloud Build). Does not allow deletion or project mutation."
+      policies:
+        - p, proj:data-platform:ci-role, applications, sync, data-platform/*, allow
+        - p, proj:data-platform:ci-role, applications, get, data-platform/*, allow
+      jwtTokens: []
+
+  orphanedResources:
+    warn: true
+
+  # Maintenance blackout: prevent syncs on Fridays 17:00–23:59 UTC.
+  # This stops accidental deployments going in right before the weekend.
+  syncWindows:
+    - kind: allow
+      schedule: "* * * * *"
+      duration: 24h
+      applications:
+        - "*"
+      namespaces:
+        - "*"
+      clusters:
+        - "*"
+      manualSync: true
+    - kind: deny
+      schedule: "0 17 * * 5"
+      duration: 7h
+      applications:
+        - "*"
+      namespaces:
+        - "*"
+      clusters:
+        - "*"
+      manualSync: false
+
+---
+###############################################################################
+# Root Application — App of Apps
+#
+# This Application makes ArgoCD manage all Applications in the
+# gitops/argocd/applications/ directory. When a new Application manifest is
+# committed there, ArgoCD will automatically create it. This is the App of
+# Apps pattern: one Application that manages all other Applications.
+###############################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: data-platform-root
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  labels:
+    app.kubernetes.io/part-of: gcp-data-platform
+  finalizers:
+    # Cascade deletion: when this app is deleted, delete all child apps too.
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: data-platform
+
+  source:
+    repoURL: https://github.com/REPLACE_ORG/gcp-data-platform.git
+    targetRevision: HEAD
+    path: gitops/argocd/applications
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 2m
