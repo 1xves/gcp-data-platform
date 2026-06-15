@@ -105,16 +105,14 @@ jobs:
           SERVICE_URL="${{ steps.deploy.outputs.url }}"
           echo "Service URL: ${SERVICE_URL}"
 
-          # Health check
-          echo "→ Testing /healthz..."
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${SERVICE_URL}/healthz")
-          if [ "$STATUS" != "200" ]; then
-            echo "FAIL: /healthz returned ${STATUS}"
-            exit 1
-          fi
-          echo "  /healthz: ${STATUS} ✓"
+          # NOTE: /healthz is intentionally omitted from external smoke tests.
+          # Google's edge intercepts that path on *.run.app URLs and returns a
+          # platform 404 before the request reaches the container, regardless of
+          # container health. The route still exists for internal Cloud Run liveness
+          # probes, which bypass the edge and hit the container directly.
+          # /readyz is the correct external readiness signal.
 
-          # Readiness check
+          # Readiness check — confirms container is up and model is loaded
           echo "→ Testing /readyz..."
           STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${SERVICE_URL}/readyz")
           if [ "$STATUS" != "200" ]; then
