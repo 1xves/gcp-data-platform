@@ -16,6 +16,10 @@ terraform {
       source  = "hashicorp/google-beta"
       version = "~> 5.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 
   # Remote state — bucket name passed via -backend-config at init time:
@@ -323,6 +327,42 @@ module "cloud_run" {
   common_labels         = var.common_labels
 
   depends_on = [module.iam, google_project_service.apis]
+}
+
+###############################################################################
+# Module: Cost Guard (daily-spend kill-switch)
+#
+# Hourly Cloud Scheduler -> Cloud Function -> BigQuery billing export. If today's
+# net spend exceeds the daily limit, performs a targeted, reversible teardown:
+# cancel running Dataflow jobs, scale the predictor to zero + cut public access,
+# and drive Feature Store online nodes to 0.
+#
+# Prerequisite (manual, Console-only, no backfill): enable the Cloud Billing
+# BigQuery export pointing at module.cost_guard.billing_export_dataset.
+###############################################################################
+
+module "cost_guard" {
+  source = "./modules/cost-guard"
+
+  project_id      = var.project_id
+  region          = var.region
+  resource_prefix = var.resource_prefix
+
+  daily_limit_usd    = var.cost_guard_daily_limit_usd
+  dry_run            = var.cost_guard_dry_run
+  billing_account_id = var.billing_account_id
+
+  predictor_service_name = "${var.resource_prefix}-predictor"
+  predictor_runtime_sa   = module.iam.vertex_serving_sa_email
+  featurestore_id        = "${replace(var.resource_prefix, "-", "_")}_feature_store"
+
+  labels = var.common_labels
+
+  # Only depends on the runtime SA from module.iam. Deliberately NOT depends_on
+  # module.cloud_run — the predictor is referenced by name (a string), and a
+  # dependency edge would drag the CD-managed Cloud Run service into every
+  # targeted cost_guard apply.
+  depends_on = [module.iam]
 }
 
 ###############################################################################

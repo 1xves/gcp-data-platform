@@ -1,0 +1,4 @@
+functions-framework==3.8.1
+google-cloud-bigquery==3.25.0
+google-api-python-client==2.149.0
+google-auth==2.35.0

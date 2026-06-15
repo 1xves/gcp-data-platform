@@ -21,6 +21,7 @@ htmlcov/
 *.tfstate
 *.tfstate.*
 *.tfplan
+.build/
 crash.log
 crash.*.log
 # Keep example tfvars; ignore any local real-value overrides

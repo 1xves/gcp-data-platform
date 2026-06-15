@@ -107,3 +107,11 @@ alert_notification_email = "sylmobleyiii@gmail.com"
 #              --role="roles/billing.costsManager"
 billing_account_id       = "XXXXXX-XXXXXX-XXXXXX"  # set per-deploy — do not commit real value
 budget_monthly_limit_usd = 50   # Alert at $12.50 / $25 / $50 / $50 forecasted
+
+# ── Cost Guard (daily-spend kill-switch) ───────────────────────────────────────
+# Hourly check of BigQuery billing export; if today's net spend > limit, tears
+# down billable workloads (Dataflow jobs, Cloud Run, Feature Store nodes).
+# PREREQUISITE: enable the Cloud Billing BigQuery export (Console-only) pointing
+# at the "billing_export" dataset this module creates. No data until enabled.
+cost_guard_daily_limit_usd = 50
+cost_guard_dry_run         = false

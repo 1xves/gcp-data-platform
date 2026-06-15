@@ -231,6 +231,19 @@ variable "predictor_allow_unauthenticated" {
   default     = true
 }
 
+# ── Cost Guard (daily-spend kill-switch) ─────────────────────────────────────────
+variable "cost_guard_daily_limit_usd" {
+  description = "Daily net-spend threshold (USD). cost-guard tears down workloads above this."
+  type        = number
+  default     = 50
+}
+
+variable "cost_guard_dry_run" {
+  description = "If true, cost-guard logs teardown actions but does not execute them. Set true to validate before arming."
+  type        = bool
+  default     = false
+}
+
 # ── Billing Budgets ──────────────────────────────────────────────────────────────
 
 variable "billing_account_id" {
