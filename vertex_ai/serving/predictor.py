@@ -148,12 +148,16 @@ class FeatureStoreClient:
         Returns DataFrame with one row per user_id, columns = ALL_FEATURES.
         Missing users (not in Feature Store) get imputed with zeros/empty strings.
         """
-        from google.cloud.aiplatform_v1.types import featurestore_online_service
+        from google.cloud.aiplatform_v1.types import (
+            featurestore_online_service,
+            FeatureSelector,
+            IdMatcher,
+        )
 
         request_obj = featurestore_online_service.ReadFeatureValuesRequest(
             entity_type=self._entity_type_path,
-            feature_selector=featurestore_online_service.FeatureSelector(
-                id_matcher=featurestore_online_service.IdMatcher(ids=ALL_FEATURES)
+            feature_selector=FeatureSelector(
+                id_matcher=IdMatcher(ids=ALL_FEATURES)
             ),
         )
 
