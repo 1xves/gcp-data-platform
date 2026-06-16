@@ -128,14 +128,15 @@ jobs:
             -d '{"instances": ["smoke-test-user-001"]}')
           echo "  Response: ${RESPONSE}"
 
-          # jq -e exits non-zero unless .churn_risk_score is present and non-null,
-          # which also catches malformed JSON and error bodies that merely mention
-          # the field — a stronger gate than a substring grep.
-          if ! echo "$RESPONSE" | jq -e '.churn_risk_score' >/dev/null; then
-            echo "FAIL: response missing churn_risk_score (or not valid JSON)"
+          # Validate response structure: predictions array with at least one entry
+          # that has a non-null churn_risk_score. The field is nested at
+          # .predictions[0].churn_risk_score — not the top level — so jq must
+          # traverse into the array. jq -e exits non-zero for null/false/missing.
+          if ! echo "$RESPONSE" | jq -e '.predictions[0].churn_risk_score' >/dev/null; then
+            echo "FAIL: response missing predictions[0].churn_risk_score (or not valid JSON)"
             exit 1
           fi
-          echo "  /v1/predict: churn_risk_score present ✓"
+          echo "  /v1/predict: predictions[0].churn_risk_score present ✓"
 
           echo ""
           echo "All smoke tests passed. Deployment successful."
