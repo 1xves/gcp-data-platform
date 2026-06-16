@@ -74,6 +74,8 @@ locals {
     "cloudbuild.googleapis.com",
     "cloudscheduler.googleapis.com",
     "billingbudgets.googleapis.com",  # Required for google_billing_budget resources
+    "run.googleapis.com",             # Cloud Run (predictor + bridge)
+    "iam.googleapis.com",             # IAM API — service account operations
   ]
 }
 
@@ -140,6 +142,31 @@ module "gke" {
   node_locations                = var.gke_node_locations
 
   depends_on = [google_project_service.apis, module.networking]
+}
+
+###############################################################################
+# GitHub Actions — GKE IAM (conditional on cluster being active)
+#
+# roles/container.admin grants the github-actions SA the ability to:
+#   • gcloud container clusters get-credentials (reads cluster endpoint + CA cert)
+#   • kubectl apply / helm upgrade (manages Deployments, Services, HPAs, etc.)
+#   • kubectl port-forward (used for smoke tests against private-node clusters)
+#
+# Gated on enable_gke AND github_actions_sa_email being set, so this binding:
+#   • Does not exist when the cluster is torn down (enable_gke = false)
+#   • Is automatically removed on: terraform apply (enable_gke=false)
+#   • Is a no-op if github_actions_sa_email is left at its default empty string
+#
+# Cost: IAM bindings are free resources. No billing impact.
+###############################################################################
+
+resource "google_project_iam_member" "github_actions_gke" {
+  count   = var.enable_gke && var.github_actions_sa_email != "" ? 1 : 0
+  project = var.project_id
+  role    = "roles/container.admin"
+  member  = "serviceAccount:${var.github_actions_sa_email}"
+
+  depends_on = [google_project_service.apis]
 }
 
 ###############################################################################
@@ -254,6 +281,7 @@ module "bigquery" {
   dataflow_sa_email  = module.iam.dataflow_worker_sa_email
   pipeline_sa_email  = module.iam.pipeline_runner_sa_email
   serving_sa_email   = module.iam.vertex_serving_sa_email
+  bridge_sa_email    = module.iam.bridge_sa_email
   raw_retention_days = var.raw_events_retention_days
   slot_capacity      = var.bigquery_slot_capacity
 
@@ -319,6 +347,11 @@ module "cloud_run" {
   prediction_logs_table = "${var.project_id}.${replace(var.resource_prefix, "-", "_")}_ml_features.prediction_logs"
   vertex_endpoint_id    = ""
 
+  # OSINT bridge — topic ID for fire-and-forget high-risk event publishing.
+  # google_pubsub_topic.id returns the full resource path:
+  # projects/{PROJECT_ID}/topics/{TOPIC_NAME} — the format expected by PublisherClient.
+  churn_high_risk_topic = google_pubsub_topic.churn_high_risk.id
+
   # Scaling — 0 = scale to zero (cold start ~15s). Set to 1 before a live demo.
   min_instance_count = var.predictor_min_instances
   max_instance_count = var.predictor_max_instances
@@ -326,7 +359,284 @@ module "cloud_run" {
   allow_unauthenticated = var.predictor_allow_unauthenticated
   common_labels         = var.common_labels
 
-  depends_on = [module.iam, google_project_service.apis]
+  depends_on = [module.iam, google_project_service.apis, google_pubsub_topic.churn_high_risk]
+}
+
+###############################################################################
+# OSINT Integration Bridge Infrastructure
+#
+# Event flow:
+#   Predictor (churn_score >= 0.7) → churn_high_risk Pub/Sub topic
+#     → push subscription (OIDC auth) → bridge Cloud Run /v1/enrich
+#     → Supabase PostgREST (user_entity_map lookup)
+#     → BigQuery enriched_interventions (streaming insert)
+#
+# Auth chain:
+#   Pub/Sub SA → serviceAccountTokenCreator → bridge_invoker SA
+#   bridge_invoker SA → run.invoker → bridge Cloud Run service
+#
+# Cost model (all components are event-driven or idle-at-zero):
+#   Bridge Cloud Run:    $0/month idle (scale-to-zero, infrequent events)
+#   Pub/Sub topic:       $0/month at demo traffic (sub 10 MB/month)
+#   Secret Manager:      ~$0.12/month (2 active secret versions × $0.06)
+###############################################################################
+
+# Project data source — needed for the Pub/Sub managed SA project number.
+data "google_project" "project" {
+  project_id = var.project_id
+}
+
+# ── Secret Manager — credential shells (values populated manually) ───────────
+#
+# Terraform provisions the secret METADATA only (no secret versions/values).
+# Secret values are populated via gcloud after first apply:
+#
+#   gcloud secrets versions add stg-supabase-url \
+#     --data-file=<(echo -n "https://your-project.supabase.co")
+#
+#   gcloud secrets versions add stg-supabase-service-role-key \
+#     --data-file=<(echo -n "eyJhbGciOiJIUzI1...")
+#
+# SECURITY: never commit secret values to git or check them into Terraform state.
+# The bridge Cloud Run service pulls these via secret_key_ref at runtime.
+
+resource "google_secret_manager_secret" "supabase_url" {
+  secret_id = "${var.resource_prefix}-supabase-url"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+
+  labels = var.common_labels
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret" "supabase_service_role_key" {
+  secret_id = "${var.resource_prefix}-supabase-service-role-key"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+
+  labels = var.common_labels
+
+  depends_on = [google_project_service.apis]
+}
+
+# ── Pub/Sub — churn high-risk event topic ────────────────────────────────────
+
+resource "google_pubsub_topic" "churn_high_risk" {
+  name    = "${var.resource_prefix}-churn-high-risk"
+  project = var.project_id
+
+  # Retain undelivered messages for 24 hours.
+  # The bridge is event-driven and lightweight; 24h gives ample recovery window
+  # without accumulating unbounded backlog in a runaway scenario.
+  message_retention_duration = "86400s"
+
+  labels = var.common_labels
+
+  depends_on = [google_project_service.apis]
+}
+
+# Predictor SA → publisher on this topic only (topic-level, not project-level).
+# Least privilege: the predictor can only publish to THIS topic.
+resource "google_pubsub_topic_iam_member" "predictor_churn_publisher" {
+  project = var.project_id
+  topic   = google_pubsub_topic.churn_high_risk.name
+  role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:${module.iam.vertex_serving_sa_email}"
+}
+
+# ── Bridge — Cloud Run service (OSINT enrichment pipeline) ───────────────────
+
+resource "google_cloud_run_v2_service" "bridge" {
+  name     = "${var.resource_prefix}-bridge"
+  location = var.region
+  project  = var.project_id
+
+  # Internal-only ingress: only Pub/Sub push subscriptions (which use Google's
+  # internal network) can invoke this service. Public internet cannot reach it.
+  ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+
+  template {
+    service_account = module.iam.bridge_sa_email
+
+    scaling {
+      min_instance_count = 0 # Scale to zero — $0 cost between high-risk events
+      max_instance_count = 5 # Cap burst; churn events are infrequent
+    }
+
+    # 30s timeout — Supabase HTTP lookup + BQ streaming insert < 5s typical.
+    # 30s gives a wide margin for cold starts and Supabase latency spikes.
+    timeout = "30s"
+
+    containers {
+      # Placeholder on first apply — replaced by CD pipeline after first bridge push.
+      # lifecycle.ignore_changes below ensures CD manages the image from this point.
+      image = "us-docker.pkg.dev/cloudrun/container/hello"
+
+      resources {
+        limits = {
+          cpu    = "1"
+          memory = "512Mi"
+        }
+        cpu_idle          = true  # Keep CPU allocated between requests (scale-to-zero handles cost)
+        startup_cpu_boost = false # Bridge is lightweight — no large model to load
+      }
+
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = var.project_id
+      }
+      # BigQuery table for enriched intervention rows.
+      # Format: project.dataset.table — matches BigQuery client insert_rows_json convention.
+      env {
+        name  = "ENRICHED_INTERVENTIONS_TABLE"
+        value = "${var.project_id}.${replace(var.resource_prefix, "-", "_")}_ml_features.enriched_interventions"
+      }
+
+      # Supabase credentials — mounted from Secret Manager (never in plaintext config).
+      # Secret values are populated manually after first terraform apply.
+      env {
+        name = "SUPABASE_URL"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.supabase_url.secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name = "SUPABASE_SERVICE_ROLE_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.supabase_service_role_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      startup_probe {
+        http_get {
+          path = "/healthz"
+          port = 8080
+        }
+        initial_delay_seconds = 2
+        period_seconds        = 5
+        failure_threshold     = 6  # 6 × 5s = 30s max startup time
+        timeout_seconds       = 3
+      }
+
+      liveness_probe {
+        http_get {
+          path = "/healthz"
+          port = 8080
+        }
+        period_seconds    = 30
+        failure_threshold = 3
+        timeout_seconds   = 5
+      }
+    }
+  }
+
+  labels = var.common_labels
+
+  lifecycle {
+    # CD pipeline manages the image after first apply.
+    # Terraform managing the image would conflict with gcloud run deploy in CD.
+    ignore_changes = [
+      template[0].containers[0].image,
+      template[0].labels,
+      labels,
+    ]
+  }
+
+  depends_on = [
+    module.iam,
+    google_secret_manager_secret.supabase_url,
+    google_secret_manager_secret.supabase_service_role_key,
+    google_project_service.apis,
+  ]
+}
+
+# ── Bridge invoker SA — OIDC identity for Pub/Sub push authentication ────────
+#
+# This SA is distinct from the bridge runtime SA (module.iam.bridge_sa_email).
+# The runtime SA is the Cloud Run service's identity (what the code runs as).
+# The invoker SA is the token identity Pub/Sub presents when making push calls.
+#
+# Separation of concerns: keeps Pub/Sub push auth separate from service runtime auth.
+
+resource "google_service_account" "bridge_invoker" {
+  account_id   = "${var.resource_prefix}-bridge-invoker"
+  display_name = "OSINT Bridge Pub/Sub Push Invoker"
+  project      = var.project_id
+}
+
+# Pub/Sub managed SA → creates OIDC tokens on behalf of bridge_invoker.
+# GCP's Pub/Sub SA (service-{NUMBER}@gcp-sa-pubsub.iam.gserviceaccount.com)
+# needs this permission to generate signed tokens for push delivery auth.
+resource "google_service_account_iam_member" "pubsub_token_creator" {
+  service_account_id = google_service_account.bridge_invoker.name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = "serviceAccount:service-${data.google_project.project.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+}
+
+# Bridge invoker SA can invoke the bridge Cloud Run service.
+# This is the permission Pub/Sub checks when it presents the OIDC token.
+resource "google_cloud_run_v2_service_iam_member" "bridge_invoker_run" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.bridge.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.bridge_invoker.email}"
+}
+
+# ── Pub/Sub push subscription → Bridge ───────────────────────────────────────
+
+resource "google_pubsub_subscription" "churn_high_risk_bridge" {
+  name    = "${var.resource_prefix}-churn-high-risk-bridge"
+  project = var.project_id
+  topic   = google_pubsub_topic.churn_high_risk.name
+
+  push_config {
+    # Bridge /v1/enrich endpoint — Cloud Run URI is stable after first apply.
+    push_endpoint = "${google_cloud_run_v2_service.bridge.uri}/v1/enrich"
+
+    oidc_token {
+      # Bridge_invoker SA generates the OIDC token Pub/Sub presents to Cloud Run.
+      # Cloud Run validates the token against bridge_invoker_run IAM binding above.
+      service_account_email = google_service_account.bridge_invoker.email
+    }
+  }
+
+  # Retry policy: exponential backoff 10s → 300s.
+  # Bridge returns 200 (ack) on success, expected misses, or malformed payloads.
+  # Bridge returns 500 (nack) on transient Supabase/BQ failures → triggers retry.
+  retry_policy {
+    minimum_backoff = "10s"
+    maximum_backoff = "300s"
+  }
+
+  # Retain undelivered messages for 7 days.
+  # After 7 days, stale enrichment events are dropped — no DLQ needed since
+  # enrichment is supplementary data, not source-of-truth.
+  message_retention_duration = "604800s"
+
+  # 60s ack deadline — bridge typically completes in < 5s but this gives margin
+  # for cold starts and Supabase latency spikes without premature nack.
+  ack_deadline_seconds = 60
+
+  depends_on = [
+    google_cloud_run_v2_service.bridge,
+    google_service_account.bridge_invoker,
+    google_cloud_run_v2_service_iam_member.bridge_invoker_run,
+    google_service_account_iam_member.pubsub_token_creator,
+  ]
 }
 
 ###############################################################################
@@ -359,6 +669,13 @@ module "cost_guard" {
   predictor_service_name = "${var.resource_prefix}-predictor"
   predictor_runtime_sa   = module.iam.vertex_serving_sa_email
   featurestore_id        = "${replace(var.resource_prefix, "-", "_")}_feature_store"
+
+  # GKE protection: on trip, delete the node pool (stops node compute; cluster
+  # shell remains; recreated by `terraform apply -target=module.gke`). Names match
+  # the gke module (cluster "${prefix}-gke", node pool "${prefix}-general").
+  gke_cluster_name   = "${var.resource_prefix}-gke"
+  gke_node_pool_name = "${var.resource_prefix}-general"
+  gke_location       = var.region
 
   labels = var.common_labels
 

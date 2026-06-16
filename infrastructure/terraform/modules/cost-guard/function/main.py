@@ -32,6 +32,7 @@ import os
 
 import functions_framework
 import googleapiclient.discovery
+import googleapiclient.errors
 from google.cloud import bigquery
 
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +44,9 @@ DAILY_LIMIT_USD = float(os.environ.get("DAILY_LIMIT_USD", "50"))
 BILLING_EXPORT_TABLE = os.environ.get("BILLING_EXPORT_TABLE", "")
 PREDICTOR_SERVICE = os.environ.get("PREDICTOR_SERVICE", "stg-predictor")
 FEATURESTORE_ID = os.environ.get("FEATURESTORE_ID", "")
+GKE_CLUSTER = os.environ.get("GKE_CLUSTER", "")
+GKE_NODE_POOL = os.environ.get("GKE_NODE_POOL", "")
+GKE_LOCATION = os.environ.get("GKE_LOCATION", "")
 TIME_ZONE = os.environ.get("TIME_ZONE", "America/Los_Angeles")
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 
@@ -150,9 +154,33 @@ def _scale_down_featurestore():
     return [f"featurestore:{FEATURESTORE_ID}:online_nodes=0"]
 
 
+def _scale_down_gke():
+    """Delete the GKE node pool — stops all node compute (the dominant GKE cost).
+
+    Single, reliable call (no autoscaler to fight); the cluster shell remains and
+    the pool is recreated by `terraform apply -target=module.gke`. No-ops cleanly
+    if GKE isn't configured or the pool is already gone (enable_gke=false).
+    """
+    if not GKE_CLUSTER or not GKE_NODE_POOL or not GKE_LOCATION:
+        return ["gke:not_configured"]
+    container = googleapiclient.discovery.build("container", "v1", cache_discovery=False)
+    np_name = (f"projects/{PROJECT_ID}/locations/{GKE_LOCATION}"
+               f"/clusters/{GKE_CLUSTER}/nodePools/{GKE_NODE_POOL}")
+    try:
+        if not DRY_RUN:
+            container.projects().locations().clusters().nodePools().delete(
+                name=np_name).execute()
+        return [f"gke:{GKE_CLUSTER}/{GKE_NODE_POOL}:node_pool_deleted"]
+    except googleapiclient.errors.HttpError as exc:
+        if exc.resp.status == 404:
+            return [f"gke:{GKE_CLUSTER}/{GKE_NODE_POOL}:already_absent"]
+        raise
+
+
 def _teardown():
     actions = []
-    for fn in (_cancel_dataflow_jobs, _scale_down_cloud_run, _scale_down_featurestore):
+    for fn in (_cancel_dataflow_jobs, _scale_down_cloud_run,
+               _scale_down_featurestore, _scale_down_gke):
         try:
             actions.extend(fn())
         except Exception as exc:

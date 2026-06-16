@@ -52,6 +52,24 @@ variable "featurestore_id" {
   description = "Vertex AI Feature Store id to drive online nodes to 0 (optional)."
 }
 
+variable "gke_cluster_name" {
+  type        = string
+  default     = ""
+  description = "GKE cluster whose node pool is deleted on trip (optional). Empty = skip GKE."
+}
+
+variable "gke_node_pool_name" {
+  type        = string
+  default     = ""
+  description = "GKE node pool to delete on trip — stops node compute; recreated via terraform."
+}
+
+variable "gke_location" {
+  type        = string
+  default     = ""
+  description = "Location (region/zone) of the GKE cluster, for the container API resource path."
+}
+
 variable "schedule" {
   type        = string
   default     = "0 * * * *" # hourly, on the hour

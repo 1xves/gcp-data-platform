@@ -80,6 +80,12 @@ resource "google_project_iam_member" "aiplatform_admin" {
   member  = "serviceAccount:${local.sa_email}"
 }
 
+resource "google_project_iam_member" "gke_admin" {
+  project = var.project_id
+  role    = "roles/container.clusterAdmin" # delete the node pool on trip
+  member  = "serviceAccount:${local.sa_email}"
+}
+
 # Patching a Cloud Run service that runs as another SA requires actAs on it.
 resource "google_service_account_iam_member" "actas_runtime" {
   service_account_id = "projects/${var.project_id}/serviceAccounts/${var.predictor_runtime_sa}"
@@ -141,6 +147,9 @@ resource "google_cloudfunctions2_function" "guard" {
       BILLING_EXPORT_TABLE = local.billing_export_table
       PREDICTOR_SERVICE    = var.predictor_service_name
       FEATURESTORE_ID      = var.featurestore_id
+      GKE_CLUSTER          = var.gke_cluster_name
+      GKE_NODE_POOL        = var.gke_node_pool_name
+      GKE_LOCATION         = var.gke_location
       TIME_ZONE            = var.time_zone
       DRY_RUN              = tostring(var.dry_run)
     }
