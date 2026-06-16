@@ -16,3 +16,6 @@ output "processed_dataset_id" {
 output "ml_features_dataset_id" {
   value = google_bigquery_dataset.ml_features.dataset_id
 }
+output "enriched_interventions_table_id" {
+  value = "${var.project_id}:${google_bigquery_dataset.ml_features.dataset_id}.${google_bigquery_table.enriched_interventions.table_id}"
+}

@@ -10,3 +10,6 @@ output "vertex_training_sa_email" {
 output "vertex_serving_sa_email" {
   value = google_service_account.vertex_serving.email
 }
+output "bridge_sa_email" {
+  value = google_service_account.bridge.email
+}

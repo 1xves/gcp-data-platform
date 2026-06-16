@@ -1,0 +1,104 @@
+[
+  {
+    "name": "intervention_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Bridge-generated UUID for this intervention record (deduplication key)"
+  },
+  {
+    "name": "user_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Opaque GCP churn-predictor user identifier (matches prediction_logs.user_id)"
+  },
+  {
+    "name": "osint_entity_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "OSINT entity UUID from user_entity_map (stored as text for BQ compatibility)"
+  },
+  {
+    "name": "entity_type",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "OSINT entity category (e.g. HNWI, Investor, Founder, Corporate, Politician)"
+  },
+  {
+    "name": "entity_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "OSINT entity display name; null if not present in entity_base"
+  },
+  {
+    "name": "entity_confidence",
+    "type": "FLOAT64",
+    "mode": "REQUIRED",
+    "description": "Link confidence score from user_entity_map (0.0 to 1.0)"
+  },
+  {
+    "name": "link_method",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "How the GCP user was linked to the OSINT entity (email, name_fuzzy, linkedin_url, external_id, manual)"
+  },
+  {
+    "name": "churn_risk_score",
+    "type": "FLOAT64",
+    "mode": "REQUIRED",
+    "description": "Churn probability score from the predictor (0.001 to 0.999)"
+  },
+  {
+    "name": "label",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Churn risk tier: high_risk (>=0.7), medium_risk (>=0.4), low_risk (<0.4)"
+  },
+  {
+    "name": "recommended_action",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Recommended intervention action derived from entity_type via ENTITY_ACTION_MAP"
+  },
+  {
+    "name": "model_version",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Predictor model version string at time of prediction"
+  },
+  {
+    "name": "request_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Predictor request UUID that generated the high-risk event triggering this enrichment"
+  },
+  {
+    "name": "enrichment_source",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Enrichment pipeline version tag (e.g. osint_v1) for lineage tracking"
+  },
+  {
+    "name": "pubsub_message_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Pub/Sub message ID from the churn-high-risk topic delivery; useful for deduplication and audit"
+  },
+  {
+    "name": "predicted_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "UTC timestamp when the churn prediction was made (from predictor event payload)"
+  },
+  {
+    "name": "intervention_date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "Date of intervention in UTC (partition key) — same-day as enriched_at"
+  },
+  {
+    "name": "enriched_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "UTC timestamp when the OSINT bridge wrote this row"
+  }
+]

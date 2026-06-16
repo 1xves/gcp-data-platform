@@ -54,6 +54,20 @@ PREDICTION_LOGS_TABLE = os.environ.get(
 MODEL_VERSION       = os.environ.get("MODEL_VERSION", "unknown")
 ENDPOINT_ID         = os.environ.get("ENDPOINT_ID", "unknown")
 
+# ── OSINT Integration Bridge — Pub/Sub event publishing ───────────────────────
+# When set, the predictor publishes a churn.high_risk event to this topic for
+# every user whose score crosses the threshold. The bridge service subscribes
+# and enriches the prediction with OSINT entity context asynchronously.
+#
+# Leave unset (empty string) to disable publishing — the prediction pipeline
+# works normally without it. This lets Cloud Run and GKE both work whether or
+# not the OSINT integration is wired up.
+#
+# Topic path format: projects/{PROJECT_ID}/topics/{TOPIC_NAME}
+# Example: projects/project-6db0f664-1423-47cb-86d/topics/stg-churn-high-risk
+CHURN_HIGH_RISK_TOPIC     = os.environ.get("CHURN_HIGH_RISK_TOPIC", "")
+CHURN_HIGH_RISK_THRESHOLD = float(os.environ.get("CHURN_HIGH_RISK_THRESHOLD", "0.7"))
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Prediction Logging — async, non-blocking
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,6 +262,15 @@ logger.info("Model loaded successfully")
 _feature_client = FeatureStoreClient()
 _prediction_logger = AsyncPredictionLogger()
 
+# ── Pub/Sub publisher (optional — only when CHURN_HIGH_RISK_TOPIC is set) ─────
+_pubsub_publisher = None
+if CHURN_HIGH_RISK_TOPIC:
+    from google.cloud import pubsub_v1
+    _pubsub_publisher = pubsub_v1.PublisherClient()
+    logger.info("Pub/Sub publisher initialised. High-risk topic: %s", CHURN_HIGH_RISK_TOPIC)
+else:
+    logger.info("CHURN_HIGH_RISK_TOPIC not set — OSINT bridge publishing disabled")
+
 app = Flask(__name__)
 
 
@@ -330,6 +353,30 @@ def predict():
     # ── 4. Async prediction log ───────────────────────────────────────────────
     for row in log_rows:
         _prediction_logger.log(row)
+
+    # ── 5. OSINT bridge: publish high-risk events (fire-and-forget) ───────────
+    # Publish is non-blocking: publisher.publish() returns a Future immediately.
+    # We do not call future.result() — if the publish fails, we log a warning
+    # and continue. The prediction response is never delayed or failed due to
+    # a Pub/Sub issue.
+    if _pubsub_publisher and not is_shadow:
+        for pred in predictions:
+            if pred["churn_risk_score"] >= CHURN_HIGH_RISK_THRESHOLD:
+                event = json.dumps({
+                    "user_id":          pred["user_id"],
+                    "churn_risk_score": pred["churn_risk_score"],
+                    "label":            pred["label"],
+                    "model_version":    MODEL_VERSION,
+                    "request_id":       request_id,
+                    "predicted_at":     now.isoformat(),
+                }).encode("utf-8")
+                try:
+                    _pubsub_publisher.publish(CHURN_HIGH_RISK_TOPIC, event)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to publish high-risk event for user_id=%s: %s",
+                        pred["user_id"], exc,
+                    )
 
     total_ms = (time.monotonic() - start_time) * 1000
     logger.info(

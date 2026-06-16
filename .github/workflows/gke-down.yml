@@ -1,0 +1,135 @@
+###############################################################################
+# GKE Down — Remove Predictor Workload from GKE
+#
+# Triggered manually from GitHub Actions → workflow_dispatch.
+# Uninstalls the Helm release and deletes the namespace so no workload resources
+# remain in the cluster before you run terraform destroy.
+#
+# This workflow does NOT destroy the cluster itself (that is a Terraform operation
+# run locally). Separating Helm teardown from Terraform destroy gives you the
+# ability to check pod logs / final state before committing to infrastructure
+# destruction.
+#
+# After this workflow completes, destroy the cluster locally:
+#   cd infrastructure/terraform
+#   terraform destroy -target=module.gke \
+#     -var-file=staging.tfvars \
+#     -var="billing_account_id=$BILLING_ACCOUNT_ID"
+#
+# Required GitHub Secrets:
+#   GCP_PROJECT_ID, GCP_REGION, GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT
+###############################################################################
+
+name: GKE Down — Remove from GKE
+
+on:
+  workflow_dispatch:
+
+env:
+  PROJECT_ID:   ${{ secrets.GCP_PROJECT_ID }}
+  REGION:       ${{ secrets.GCP_REGION }}
+  CLUSTER_NAME: stg-gke
+  NAMESPACE:    predictor-staging
+  RELEASE_NAME: predictor
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  teardown-gke:
+    name: Helm Uninstall → GKE
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install GKE auth plugin
+        run: gcloud components install gke-gcloud-auth-plugin --quiet
+
+      - name: Check if cluster exists
+        id: cluster-check
+        run: |
+          if gcloud container clusters describe ${{ env.CLUSTER_NAME }} \
+               --region ${{ env.REGION }} \
+               --project ${{ env.PROJECT_ID }} \
+               --format="value(name)" 2>/dev/null; then
+            echo "Cluster '${{ env.CLUSTER_NAME }}' found — proceeding with Helm teardown."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Cluster '${{ env.CLUSTER_NAME }}' not found — nothing to undeploy."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Get GKE credentials
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          gcloud container clusters get-credentials ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }}
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+      - name: Install Helm
+        if: steps.cluster-check.outputs.exists == 'true'
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.14.0'
+
+      - name: Helm uninstall predictor
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          if helm status ${{ env.RELEASE_NAME }} --namespace ${{ env.NAMESPACE }} 2>/dev/null; then
+            echo "Uninstalling Helm release '${{ env.RELEASE_NAME }}' from namespace '${{ env.NAMESPACE }}'..."
+            helm uninstall ${{ env.RELEASE_NAME }} --namespace ${{ env.NAMESPACE }} --wait
+            echo "Helm release uninstalled ✓"
+          else
+            echo "Release '${{ env.RELEASE_NAME }}' not found in '${{ env.NAMESPACE }}' — skipping."
+          fi
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+      - name: Delete namespace
+        if: steps.cluster-check.outputs.exists == 'true'
+        # --wait=false: don't block the job on namespace termination finalizers.
+        # The namespace will finish cleaning up asynchronously; the cluster itself
+        # will be destroyed by terraform shortly after anyway.
+        run: |
+          if kubectl get namespace ${{ env.NAMESPACE }} 2>/dev/null; then
+            kubectl delete namespace ${{ env.NAMESPACE }} --wait=false
+            echo "Namespace '${{ env.NAMESPACE }}' deletion requested ✓"
+          else
+            echo "Namespace '${{ env.NAMESPACE }}' not found — skipping."
+          fi
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+      - name: Output teardown summary
+        if: always()
+        run: |
+          echo "### GKE Teardown Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Helm workloads removed. No billable GKE pod costs remain." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Next step — destroy the cluster infrastructure (run locally):**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "cd infrastructure/terraform" >> $GITHUB_STEP_SUMMARY
+          echo "terraform destroy -target=module.gke \\" >> $GITHUB_STEP_SUMMARY
+          echo "  -var-file=staging.tfvars \\" >> $GITHUB_STEP_SUMMARY
+          echo "  -var=\"billing_account_id=\$BILLING_ACCOUNT_ID\"" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "After destroy completes:" >> $GITHUB_STEP_SUMMARY
+          echo "- GKE cluster management fee: **\$0** ✓" >> $GITHUB_STEP_SUMMARY
+          echo "- GKE node costs: **\$0** ✓" >> $GITHUB_STEP_SUMMARY
+          echo "- \`enable_gke\` in staging.tfvars remains \`false\` (the default — no change needed)" >> $GITHUB_STEP_SUMMARY

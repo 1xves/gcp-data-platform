@@ -324,3 +324,16 @@ variable "enable_gke" {
   type    = bool
   default = false
 }
+
+variable "github_actions_sa_email" {
+  description = <<-EOT
+    Email of the service account used by GitHub Actions (Workload Identity Federation).
+    When enable_gke = true, this SA is granted roles/container.admin so the CD pipeline
+    can fetch GKE credentials and run helm upgrade.
+    Format: github-actions@<PROJECT_ID>.iam.gserviceaccount.com
+    Created during the initial WIF bootstrap — not managed by this Terraform config.
+    Leave empty to skip the IAM binding (e.g. when testing Terraform locally without GKE).
+  EOT
+  type    = string
+  default = ""
+}

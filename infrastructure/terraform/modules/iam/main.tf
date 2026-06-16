@@ -109,6 +109,30 @@ resource "google_project_iam_member" "vertex_serving_roles" {
 }
 
 ###############################################################################
+# OSINT Integration Bridge Service Account
+# Runs the bridge Cloud Run service — writes enriched interventions to BQ,
+# reads Supabase credentials from Secret Manager
+###############################################################################
+
+resource "google_service_account" "bridge" {
+  account_id   = "${var.resource_prefix}-bridge"
+  display_name = "OSINT Integration Bridge SA"
+  project      = var.project_id
+}
+
+resource "google_project_iam_member" "bridge_roles" {
+  for_each = toset([
+    "roles/bigquery.dataEditor",          # Write enriched_interventions rows
+    "roles/bigquery.jobUser",             # Submit streaming inserts
+    "roles/secretmanager.secretAccessor", # Read Supabase URL + service role key
+    "roles/monitoring.metricWriter",      # Write bridge latency metrics
+  ])
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.bridge.email}"
+}
+
+###############################################################################
 # Workload Identity: Allow GKE workloads to impersonate SAs (if GKE added later)
 # Commented out — uncomment when GKE is provisioned
 ###############################################################################

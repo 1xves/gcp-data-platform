@@ -107,6 +107,14 @@ resource "google_cloud_run_v2_service" "predictor" {
         name  = "LOG_LEVEL"
         value = var.log_level
       }
+      # OSINT bridge integration — Pub/Sub topic for high-risk churn events.
+      # When non-empty, predictor publishes fire-and-forget events for users
+      # with churn_risk_score >= CHURN_HIGH_RISK_THRESHOLD (default 0.7).
+      # Empty string disables publishing — safe default until bridge is deployed.
+      env {
+        name  = "CHURN_HIGH_RISK_TOPIC"
+        value = var.churn_high_risk_topic
+      }
       # Cloud Run injects PORT automatically (default 8080).
       # The Dockerfile CMD uses $PORT — no need to set it here.
 

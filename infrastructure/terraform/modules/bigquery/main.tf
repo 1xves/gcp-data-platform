@@ -115,6 +115,14 @@ resource "google_bigquery_dataset" "ml_features" {
     role          = "READER"
     user_by_email = var.serving_sa_email
   }
+  # Bridge SA writes enriched_interventions rows via streaming insert
+  dynamic "access" {
+    for_each = var.bridge_sa_email != "" ? [1] : []
+    content {
+      role          = "WRITER"
+      user_by_email = var.bridge_sa_email
+    }
+  }
   access {
     role          = "OWNER"
     special_group = "projectOwners"
@@ -229,6 +237,43 @@ resource "google_bigquery_table" "prediction_logs" {
   clustering = ["model_version", "user_id"]
 
   schema = file("${path.module}/schemas/prediction_logs.json")
+}
+
+###############################################################################
+# Table: enriched_interventions (gold — OSINT bridge output)
+#
+# Written by the OSINT integration bridge when a high-risk churn prediction
+# is enriched with entity context from Supabase. One row per high-risk
+# prediction event that successfully resolves to an OSINT entity.
+#
+# Partition: intervention_date (daily) — most queries are day/week ranges.
+# Cluster:   entity_type, user_id — common filter pattern for interventions.
+###############################################################################
+
+resource "google_bigquery_table" "enriched_interventions" {
+  dataset_id          = google_bigquery_dataset.ml_features.dataset_id
+  table_id            = "enriched_interventions"
+  project             = var.project_id
+  description         = "OSINT-enriched intervention records for high-risk churn predictions."
+  deletion_protection = false # Safe to recreate — data is event-derived, not source-of-truth
+
+  require_partition_filter = false # Intervention dashboard queries need full-range scans
+
+  time_partitioning {
+    type  = "DAY"
+    field = "intervention_date"
+  }
+
+  clustering = ["entity_type", "user_id"]
+
+  schema = file("${path.module}/schemas/enriched_interventions.json")
+
+  labels = {
+    table_type  = "enriched"
+    source      = "osint-bridge"
+    partitioned = "true"
+    clustered   = "true"
+  }
 }
 
 ###############################################################################

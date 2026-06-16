@@ -63,6 +63,10 @@ gke_max_node_count = 3
 # Other zones in us-central1 (-b, -c, -f) are currently hitting GCE_STOCKOUT.
 gke_node_locations = ["us-central1-a"]
 
+# SA used by GitHub Actions (WIF). Granted roles/container.admin when enable_gke = true
+# so the CD pipeline can get-credentials and run helm upgrade against the cluster.
+github_actions_sa_email = "github-actions@project-6db0f664-1423-47cb-86d.iam.gserviceaccount.com"
+
 # ── Pub/Sub ───────────────────────────────────────────────────────────────────
 pubsub_message_retention_sec = 86400  # 1 day (vs 7 days in production)
 pubsub_max_delivery_attempts = 5

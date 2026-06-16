@@ -28,13 +28,15 @@ on:
     paths:
       - 'vertex_ai/serving/**'
       - 'vertex_ai/training/trainer/**'
+      - 'vertex_ai/bridge/**'
       - '.github/workflows/cd.yml'
 
 env:
-  PROJECT_ID:   ${{ secrets.GCP_PROJECT_ID }}
-  REGION:       ${{ secrets.GCP_REGION }}
-  AR_REPO:      ${{ secrets.ARTIFACT_REGISTRY_REPO }}
-  SERVICE_NAME: stg-predictor   # Must match resource_prefix in Terraform + Cloud Run module
+  PROJECT_ID:          ${{ secrets.GCP_PROJECT_ID }}
+  REGION:              ${{ secrets.GCP_REGION }}
+  AR_REPO:             ${{ secrets.ARTIFACT_REGISTRY_REPO }}
+  SERVICE_NAME:        stg-predictor   # Must match resource_prefix in Terraform + Cloud Run module
+  BRIDGE_SERVICE_NAME: stg-bridge      # OSINT integration bridge Cloud Run service
 
 permissions:
   contents: read
@@ -65,11 +67,17 @@ jobs:
         id: tag
         run: |
           SHA=$(echo ${{ github.sha }} | cut -c1-8)
+          # Predictor image
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/predictor"
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "image_tagged=${IMAGE}:${SHA}" >> "$GITHUB_OUTPUT"
           echo "image_latest=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+          # Bridge image (same SHA, separate repo path)
+          BRIDGE_IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/bridge"
+          echo "bridge_image=${BRIDGE_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "bridge_image_tagged=${BRIDGE_IMAGE}:${SHA}" >> "$GITHUB_OUTPUT"
+          echo "bridge_image_latest=${BRIDGE_IMAGE}:latest" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -88,6 +96,21 @@ jobs:
           cache-to: type=gha,mode=max
           # SHA tag = immutable reference for this deploy (enables instant rollback).
           # latest tag = convenience for local pulls and first terraform apply.
+
+      - name: Build and push bridge image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: vertex_ai/bridge/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.tag.outputs.bridge_image_tagged }}
+            ${{ steps.tag.outputs.bridge_image_latest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Bridge image built from same SHA as predictor so both services are
+          # always at the same commit — makes rollback and bisection tractable.
 
       - name: Deploy to Cloud Run
         id: deploy
@@ -142,6 +165,99 @@ jobs:
           echo "All smoke tests passed. Deployment successful."
           echo "Live URL: ${SERVICE_URL}"
 
+      - name: Deploy bridge to Cloud Run
+        # Bridge is always deployed on every CD trigger (no if: guard) so that
+        # predictor and bridge are always on the same commit — makes rollback,
+        # bisection, and incident correlation trivial. The bridge Cloud Run service
+        # is INGRESS_TRAFFIC_INTERNAL_ONLY so there is no public URL to smoke test.
+        # Cloud Run's managed startup probe (/healthz) confirms the container is
+        # healthy before Pub/Sub push deliveries begin.
+        run: |
+          gcloud run deploy ${{ env.BRIDGE_SERVICE_NAME }} \
+            --image ${{ steps.tag.outputs.bridge_image_tagged }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }}
+          echo "Bridge deployed: ${{ env.BRIDGE_SERVICE_NAME }} @ ${{ steps.tag.outputs.bridge_image_tagged }}"
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Optional GKE deploy — runs only when the cluster is active.
+      #
+      # Normal (parked) state: enable_gke=false in Terraform → cluster does not
+      # exist → these steps are all skipped → $0 GKE cost.
+      #
+      # Active state: after running gke-up.yml (or terraform apply enable_gke=true)
+      # the cluster exists → these steps deploy the same SHA to GKE automatically.
+      #
+      # Design: detect cluster existence at runtime rather than via a flag so that
+      # no manual secret/variable toggle is needed — the cluster's presence IS
+      # the signal.
+      # ─────────────────────────────────────────────────────────────────────────
+
+      - name: Check if GKE cluster is active
+        id: gke-check
+        run: |
+          if gcloud container clusters describe stg-gke \
+               --region ${{ env.REGION }} \
+               --project ${{ env.PROJECT_ID }} \
+               --format="value(name)" 2>/dev/null; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "GKE cluster stg-gke is active — will also deploy to GKE"
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+            echo "GKE cluster not found — skipping GKE deploy (cost-saving idle state)"
+          fi
+
+      - name: Install GKE auth plugin
+        if: steps.gke-check.outputs.active == 'true'
+        run: gcloud components install gke-gcloud-auth-plugin --quiet
+
+      - name: Install Helm
+        if: steps.gke-check.outputs.active == 'true'
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.14.0'
+
+      - name: Get GKE credentials
+        if: steps.gke-check.outputs.active == 'true'
+        run: |
+          gcloud container clusters get-credentials stg-gke \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }}
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+      - name: Ensure predictor-staging namespace exists
+        if: steps.gke-check.outputs.active == 'true'
+        run: |
+          kubectl create namespace predictor-staging --dry-run=client -o yaml | kubectl apply -f -
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+      - name: Deploy to GKE via Helm
+        if: steps.gke-check.outputs.active == 'true'
+        # Deploys the same immutable SHA that went to Cloud Run, keeping both
+        # serving targets on identical code. --atomic rolls back automatically
+        # if pods fail to become Ready within the timeout.
+        run: |
+          helm upgrade --install predictor ./helm/predictor \
+            -f helm/predictor/values.yaml \
+            -f helm/predictor/values-staging.yaml \
+            --namespace predictor-staging \
+            --set image.tag=${{ steps.tag.outputs.sha }} \
+            --atomic \
+            --timeout 5m
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+      - name: Verify GKE rollout
+        if: steps.gke-check.outputs.active == 'true'
+        run: |
+          kubectl rollout status deployment/predictor \
+            --namespace predictor-staging \
+            --timeout=5m
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
       - name: Output deployment summary
         if: always()
         run: |
@@ -149,9 +265,12 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Service | ${{ env.SERVICE_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Predictor service | ${{ env.SERVICE_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bridge service | ${{ env.BRIDGE_SERVICE_NAME }} (internal-only) |" >> $GITHUB_STEP_SUMMARY
           echo "| Region | ${{ env.REGION }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Image | \`${{ steps.tag.outputs.image_tagged }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| URL | ${{ steps.deploy.outputs.url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Predictor image | \`${{ steps.tag.outputs.image_tagged }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bridge image | \`${{ steps.tag.outputs.bridge_image_tagged }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cloud Run URL | ${{ steps.deploy.outputs.url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| GKE deployed | ${{ steps.gke-check.outputs.active == 'true' && 'yes — predictor-staging' || 'no (cluster idle)' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Commit | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Triggered by | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY

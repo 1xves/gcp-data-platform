@@ -21,6 +21,10 @@ htmlcov/
 *.tfstate
 *.tfstate.*
 *.tfplan
+# Terraform plan output files (may contain sensitive resource values)
+*.plan
+# One-time macOS deployment helpers — not part of the project
+*.command
 .build/
 crash.log
 crash.*.log

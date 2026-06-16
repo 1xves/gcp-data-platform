@@ -1,0 +1,196 @@
+###############################################################################
+# GKE Up — Deploy Predictor Workload to GKE
+#
+# Triggered manually from GitHub Actions → workflow_dispatch.
+# Assumes the GKE cluster is already provisioned (terraform apply enable_gke=true).
+# Deploys the predictor Helm chart and smoke-tests it via kubectl port-forward.
+#
+# Cost model (on-demand GKE):
+#   • Cluster management fee:   ~$0.10 / hour
+#   • 1× n1-standard-2 node:   ~$0.048 / hour  (us-central1-a)
+#   • Total per 2-hour session: ~$0.30
+#
+# To provision the cluster before running this workflow:
+#   cd infrastructure/terraform
+#   terraform apply -target=module.gke \
+#     -var-file=staging.tfvars \
+#     -var="enable_gke=true" \
+#     -var="billing_account_id=$BILLING_ACCOUNT_ID"
+#
+# Required GitHub Secrets (same as cd.yml):
+#   GCP_PROJECT_ID, GCP_REGION, GCP_WORKLOAD_IDENTITY_PROVIDER,
+#   GCP_SERVICE_ACCOUNT, ARTIFACT_REGISTRY_REPO
+###############################################################################
+
+name: GKE Up — Deploy to GKE
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Predictor image tag to deploy (default: latest)'
+        required: false
+        default: 'latest'
+
+env:
+  PROJECT_ID:   ${{ secrets.GCP_PROJECT_ID }}
+  REGION:       ${{ secrets.GCP_REGION }}
+  AR_REPO:      ${{ secrets.ARTIFACT_REGISTRY_REPO }}
+  CLUSTER_NAME: stg-gke
+  NAMESPACE:    predictor-staging
+  RELEASE_NAME: predictor
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-gke:
+    name: Helm Deploy → GKE
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install GKE auth plugin
+        run: gcloud components install gke-gcloud-auth-plugin --quiet
+
+      - name: Verify cluster exists
+        # Fail fast with a clear error if the cluster hasn't been provisioned yet.
+        # Cluster provisioning is manual (terraform apply) to keep cost at $0 when idle.
+        run: |
+          if ! gcloud container clusters describe ${{ env.CLUSTER_NAME }} \
+               --region ${{ env.REGION }} \
+               --project ${{ env.PROJECT_ID }} \
+               --format="value(name)" 2>/dev/null; then
+            echo ""
+            echo "ERROR: Cluster '${{ env.CLUSTER_NAME }}' not found in ${{ env.REGION }}."
+            echo ""
+            echo "Provision the cluster first:"
+            echo "  cd infrastructure/terraform"
+            echo "  terraform apply -target=module.gke \\"
+            echo "    -var-file=staging.tfvars \\"
+            echo "    -var=\"enable_gke=true\" \\"
+            echo "    -var=\"billing_account_id=\$BILLING_ACCOUNT_ID\""
+            exit 1
+          fi
+          echo "Cluster '${{ env.CLUSTER_NAME }}' is active ✓"
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }}
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.14.0'
+
+      - name: Create namespace (idempotent)
+        run: |
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+      - name: Set image reference
+        id: image
+        run: |
+          TAG="${{ github.event.inputs.image_tag }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Deploying image tag: ${TAG}"
+
+      - name: Helm upgrade --install predictor
+        # --atomic: rollback automatically on failure, surface exit code to CI
+        # --timeout: how long to wait for Kubernetes to reach the desired state
+        # Values precedence (right wins): values.yaml → values-staging.yaml → --set flags
+        run: |
+          helm upgrade --install ${{ env.RELEASE_NAME }} ./helm/predictor \
+            -f helm/predictor/values.yaml \
+            -f helm/predictor/values-staging.yaml \
+            --namespace ${{ env.NAMESPACE }} \
+            --set image.tag=${{ steps.image.outputs.tag }} \
+            --atomic \
+            --timeout 5m
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+      - name: Verify rollout
+        run: |
+          kubectl rollout status deployment/${{ env.RELEASE_NAME }} \
+            --namespace ${{ env.NAMESPACE }} \
+            --timeout=5m
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+      - name: Smoke test via port-forward
+        # Nodes are private (no external IPs). kubectl port-forward tunnels through
+        # the API server, which IS reachable from the GitHub runner (master is public).
+        # This is the correct approach for private GKE clusters in CI.
+        run: |
+          kubectl port-forward svc/${{ env.RELEASE_NAME }} 8080:80 \
+            --namespace ${{ env.NAMESPACE }} &
+          PF_PID=$!
+          sleep 8   # wait for the tunnel to establish
+
+          echo "→ Testing /readyz..."
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "http://localhost:8080/readyz" || echo "000")
+          if [ "$STATUS" != "200" ]; then
+            echo "FAIL: /readyz returned ${STATUS}"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+          echo "  /readyz: ${STATUS} ✓"
+
+          echo "→ Testing /v1/predict..."
+          RESPONSE=$(curl -sf -X POST "http://localhost:8080/v1/predict" \
+            -H "Content-Type: application/json" \
+            -d '{"instances": ["smoke-test-user-001"]}' || echo '{}')
+          echo "  Response: ${RESPONSE}"
+          if ! echo "$RESPONSE" | grep -q "churn_risk_score"; then
+            echo "FAIL: response missing churn_risk_score field"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+          echo "  /v1/predict: churn_risk_score present ✓"
+
+          kill $PF_PID 2>/dev/null || true
+          echo ""
+          echo "All GKE smoke tests passed ✓"
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
+
+      - name: Output deployment summary
+        if: always()
+        run: |
+          echo "### GKE Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Cluster | \`${{ env.CLUSTER_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Namespace | \`${{ env.NAMESPACE }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Release | \`${{ env.RELEASE_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image tag | \`${{ steps.image.outputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Region | \`${{ env.REGION }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Local demo access (port-forward):**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "kubectl port-forward svc/predictor 8080:80 -n predictor-staging" >> $GITHUB_STEP_SUMMARY
+          echo "# then: curl http://localhost:8080/readyz" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> **Remember to tear down:** run the **GKE Down** workflow when done." >> $GITHUB_STEP_SUMMARY
+          echo "> Cost accumulates at ~\$0.15/hour while the cluster is running." >> $GITHUB_STEP_SUMMARY

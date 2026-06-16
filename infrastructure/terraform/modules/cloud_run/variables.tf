@@ -141,3 +141,15 @@ variable "common_labels" {
   type        = map(string)
   default     = {}
 }
+
+variable "churn_high_risk_topic" {
+  description = <<-EOT
+    Full Pub/Sub topic resource ID for high-risk churn events.
+    Format: projects/{PROJECT_ID}/topics/{TOPIC_NAME}
+    When set, the predictor publishes a churn.high_risk event for every prediction
+    that crosses the CHURN_HIGH_RISK_THRESHOLD (default 0.7).
+    Leave empty (default) to disable OSINT bridge publishing.
+  EOT
+  type    = string
+  default = ""
+}
