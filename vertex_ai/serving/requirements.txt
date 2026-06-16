@@ -8,6 +8,7 @@ gunicorn==22.0.0
 google-cloud-aiplatform==1.57.0
 google-cloud-bigquery==3.23.1
 google-cloud-storage==2.14.0
+google-cloud-pubsub==2.21.4    # Fire-and-forget OSINT bridge publishing
 
 # ML / numerics
 numpy>=2.0.0
