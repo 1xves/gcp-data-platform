@@ -165,21 +165,31 @@ jobs:
           echo "All smoke tests passed. Deployment successful."
           echo "Live URL: ${SERVICE_URL}"
 
+      - name: Check if bridge service exists
+        # The bridge Cloud Run service is provisioned by Terraform (along with its
+        # runtime SA, Pub/Sub subscription, and Secret Manager references). CD
+        # should only update the image once Terraform has created the service;
+        # attempting to deploy to a non-existent service fails with PERMISSION_DENIED
+        # on the bridge SA (which also doesn't exist yet).
+        # Pattern mirrors the GKE existence check below.
+        id: bridge-check
+        run: |
+          if gcloud run services describe ${{ env.BRIDGE_SERVICE_NAME }} \
+               --region ${{ env.REGION }} \
+               --project ${{ env.PROJECT_ID }} \
+               --format="value(name)" 2>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Bridge service ${{ env.BRIDGE_SERVICE_NAME }} found — will deploy"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Bridge service not yet provisioned — skipping (run terraform apply to create it)"
+          fi
+
       - name: Deploy bridge to Cloud Run
-        # Bridge is always deployed on every CD trigger (no if: guard) so that
-        # predictor and bridge are always on the same commit — makes rollback,
-        # bisection, and incident correlation trivial. The bridge Cloud Run service
-        # is INGRESS_TRAFFIC_INTERNAL_ONLY so there is no public URL to smoke test.
-        # Cloud Run's managed startup probe (/healthz) confirms the container is
-        # healthy before Pub/Sub push deliveries begin.
-        #
-        # Uses deploy-cloudrun@v2 (same action as the predictor) rather than a raw
-        # `gcloud run deploy` command. The action sends a partial service update
-        # (image only) that does not re-specify the service account field, so GCP
-        # does not require iam.serviceaccounts.actAs on the bridge runtime SA.
-        # A raw `gcloud run deploy` sends the full service spec (including the SA
-        # currently set on the service) which triggers the actAs check and fails
-        # with PERMISSION_DENIED.
+        # Skipped until Terraform provisions stg-bridge (SA + service + secrets).
+        # On every subsequent CD run after terraform apply, this step deploys the
+        # new image. The service is INGRESS_TRAFFIC_INTERNAL_ONLY — no smoke test.
+        if: steps.bridge-check.outputs.exists == 'true'
         id: deploy-bridge
         uses: google-github-actions/deploy-cloudrun@v2
         with:
