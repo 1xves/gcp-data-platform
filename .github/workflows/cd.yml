@@ -172,12 +172,20 @@ jobs:
         # is INGRESS_TRAFFIC_INTERNAL_ONLY so there is no public URL to smoke test.
         # Cloud Run's managed startup probe (/healthz) confirms the container is
         # healthy before Pub/Sub push deliveries begin.
-        run: |
-          gcloud run deploy ${{ env.BRIDGE_SERVICE_NAME }} \
-            --image ${{ steps.tag.outputs.bridge_image_tagged }} \
-            --region ${{ env.REGION }} \
-            --project ${{ env.PROJECT_ID }}
-          echo "Bridge deployed: ${{ env.BRIDGE_SERVICE_NAME }} @ ${{ steps.tag.outputs.bridge_image_tagged }}"
+        #
+        # Uses deploy-cloudrun@v2 (same action as the predictor) rather than a raw
+        # `gcloud run deploy` command. The action sends a partial service update
+        # (image only) that does not re-specify the service account field, so GCP
+        # does not require iam.serviceaccounts.actAs on the bridge runtime SA.
+        # A raw `gcloud run deploy` sends the full service spec (including the SA
+        # currently set on the service) which triggers the actAs check and fails
+        # with PERMISSION_DENIED.
+        id: deploy-bridge
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.BRIDGE_SERVICE_NAME }}
+          region:  ${{ env.REGION }}
+          image:   ${{ steps.tag.outputs.bridge_image_tagged }}
 
       # ─────────────────────────────────────────────────────────────────────────
       # Optional GKE deploy — runs only when the cluster is active.

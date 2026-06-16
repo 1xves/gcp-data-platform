@@ -170,6 +170,33 @@ resource "google_project_iam_member" "github_actions_gke" {
 }
 
 ###############################################################################
+# GitHub Actions — Cloud Run bridge deployment (actAs the bridge runtime SA)
+#
+# When `gcloud run deploy` (or deploy-cloudrun@v2) creates/updates a Cloud Run
+# service whose revision has a service_account set, the deploying identity must
+# have iam.serviceaccounts.actAs on that SA. Without this binding:
+#   ERROR: PERMISSION_DENIED: Permission 'iam.serviceaccounts.actAs' denied
+#   on service account stg-bridge@<PROJECT>.iam.gserviceaccount.com
+#
+# The predictor CI/CD step uses deploy-cloudrun@v2 which sends a partial image
+# update and does not re-specify the SA field (avoiding the actAs check). The
+# bridge deployment also uses deploy-cloudrun@v2 for the same reason. This
+# Terraform binding is belt-and-suspenders: it ensures actAs is granted so that
+# either deploy path (action or raw gcloud) works correctly.
+#
+# Gated on github_actions_sa_email being set — no-op on local Terraform runs.
+###############################################################################
+
+resource "google_service_account_iam_member" "github_actions_act_as_bridge" {
+  count              = var.github_actions_sa_email != "" ? 1 : 0
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${module.iam.bridge_sa_email}"
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${var.github_actions_sa_email}"
+
+  depends_on = [module.iam]
+}
+
+###############################################################################
 # Module: IAM (Service Accounts + Bindings)
 ###############################################################################
 
