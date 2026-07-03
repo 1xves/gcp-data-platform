@@ -33,8 +33,8 @@ terraform {
 }
 
 provider "google" {
-  project               = var.project_id
-  region                = var.region
+  project = var.project_id
+  region  = var.region
   # user_project_override + billing_project are required for billing-account-level APIs
   # (e.g. billingbudgets.googleapis.com). Without these, API calls are attributed to
   # Google's shared default project (764086051850) where the API is disabled, causing
@@ -73,9 +73,10 @@ locals {
     "container.googleapis.com",
     "cloudbuild.googleapis.com",
     "cloudscheduler.googleapis.com",
-    "billingbudgets.googleapis.com",  # Required for google_billing_budget resources
-    "run.googleapis.com",             # Cloud Run (predictor + bridge)
-    "iam.googleapis.com",             # IAM API — service account operations
+    "billingbudgets.googleapis.com", # Required for google_billing_budget resources
+    "run.googleapis.com",            # Cloud Run (predictor + bridge)
+    "iam.googleapis.com",            # IAM API — service account operations
+    "file.googleapis.com",           # Filestore (NFS reference-data share; API enablement is free)
   ]
 }
 
@@ -140,6 +141,35 @@ module "gke" {
   min_node_count                = var.gke_min_node_count
   max_node_count                = var.gke_max_node_count
   node_locations                = var.gke_node_locations
+
+  depends_on = [google_project_service.apis, module.networking]
+}
+
+###############################################################################
+# Module: Filestore (managed NFS — shared reference-data volume)
+#
+# The NAS-equivalent for the platform: one NFSv3 share on the VPC that Dataflow
+# workers and GKE pods mount read-only for large reference datasets, instead of
+# each worker pulling its own copy from GCS (see modules/filestore/main.tf for
+# the full trade-off analysis).
+#
+# COST GATE: BASIC_HDD bills the full 1 TiB provisioned floor (~$204/month)
+# regardless of usage — 4× this project's entire monthly budget. Disabled by
+# default in staging (enable_filestore = false); the module exists as deployable
+# IaC with mount instructions in docs/filestore-mount.md.
+###############################################################################
+
+module "filestore" {
+  source = "./modules/filestore"
+  count  = var.enable_filestore ? 1 : 0
+
+  project_id      = var.project_id
+  zone            = var.filestore_zone
+  resource_prefix = var.resource_prefix
+  network_name    = module.networking.network_name
+  tier            = var.filestore_tier
+  capacity_gb     = var.filestore_capacity_gb
+  labels          = var.common_labels
 
   depends_on = [google_project_service.apis, module.networking]
 }
@@ -276,21 +306,21 @@ resource "google_storage_bucket" "reference_data" {
 module "dataflow" {
   source = "./modules/dataflow"
 
-  project_id             = var.project_id
-  region                 = var.region
-  resource_prefix        = var.resource_prefix
-  network_self_link      = module.networking.network_self_link
-  subnetwork_self_link   = module.networking.subnetwork_self_link
-  dataflow_sa_email      = module.iam.dataflow_worker_sa_email
-  staging_bucket         = google_storage_bucket.dataflow_staging.name
-  input_subscription     = module.pubsub.events_subscription_id
-  dlq_topic              = module.pubsub.dlq_topic_id
-  raw_events_table       = module.bigquery.raw_events_table_id
-  aggregates_table       = module.bigquery.event_aggregates_table_id
-  max_workers            = var.dataflow_max_workers
-  machine_type           = var.dataflow_machine_type
-  create_dataflow_job    = var.create_dataflow_job
-  on_delete              = var.dataflow_on_delete
+  project_id           = var.project_id
+  region               = var.region
+  resource_prefix      = var.resource_prefix
+  network_self_link    = module.networking.network_self_link
+  subnetwork_self_link = module.networking.subnetwork_self_link
+  dataflow_sa_email    = module.iam.dataflow_worker_sa_email
+  staging_bucket       = google_storage_bucket.dataflow_staging.name
+  input_subscription   = module.pubsub.events_subscription_id
+  dlq_topic            = module.pubsub.dlq_topic_id
+  raw_events_table     = module.bigquery.raw_events_table_id
+  aggregates_table     = module.bigquery.event_aggregates_table_id
+  max_workers          = var.dataflow_max_workers
+  machine_type         = var.dataflow_machine_type
+  create_dataflow_job  = var.create_dataflow_job
+  on_delete            = var.dataflow_on_delete
 
   depends_on = [module.pubsub, module.bigquery, module.networking, module.iam]
 }
@@ -322,14 +352,14 @@ module "bigquery" {
 module "vertex_ai" {
   source = "./modules/vertex_ai"
 
-  project_id          = var.project_id
-  region              = var.region
-  resource_prefix     = var.resource_prefix
-  ml_artifacts_bucket = google_storage_bucket.ml_artifacts.name
-  training_sa_email   = module.iam.vertex_training_sa_email
-  serving_sa_email    = module.iam.vertex_serving_sa_email
-  network_self_link   = module.networking.network_self_link
-  prediction_logs_table = module.bigquery.prediction_logs_table_id
+  project_id                     = var.project_id
+  region                         = var.region
+  resource_prefix                = var.resource_prefix
+  ml_artifacts_bucket            = google_storage_bucket.ml_artifacts.name
+  training_sa_email              = module.iam.vertex_training_sa_email
+  serving_sa_email               = module.iam.vertex_serving_sa_email
+  network_self_link              = module.networking.network_self_link
+  prediction_logs_table          = module.bigquery.prediction_logs_table_id
   featurestore_online_node_count = var.featurestore_online_node_count
   enable_online_endpoint         = var.enable_online_endpoint
   enable_daily_retraining        = var.enable_daily_retraining
@@ -363,8 +393,8 @@ module "cloud_run" {
   image = var.predictor_image
 
   # Application config
-  gcp_project           = var.project_id
-  gcp_region            = var.region
+  gcp_project = var.project_id
+  gcp_region  = var.region
   # Feature Store name is generated in the vertex_ai module as replace(resource_prefix, "-", "_") + "_feature_store"
   # Mirror that logic here so the predictor env var matches the actual resource name.
   feature_store_id      = "${replace(var.resource_prefix, "-", "_")}_feature_store"
@@ -554,7 +584,7 @@ resource "google_cloud_run_v2_service" "bridge" {
         }
         initial_delay_seconds = 2
         period_seconds        = 5
-        failure_threshold     = 6  # 6 × 5s = 30s max startup time
+        failure_threshold     = 6 # 6 × 5s = 30s max startup time
         timeout_seconds       = 3
       }
 
@@ -720,11 +750,11 @@ module "cost_guard" {
 module "monitoring" {
   source = "./modules/monitoring"
 
-  project_id          = var.project_id
-  resource_prefix     = var.resource_prefix
-  notification_email  = var.alert_notification_email
-  dlq_topic_id        = module.pubsub.dlq_topic_id
-  dataflow_job_name   = module.dataflow.job_name
+  project_id         = var.project_id
+  resource_prefix    = var.resource_prefix
+  notification_email = var.alert_notification_email
+  dlq_topic_id       = module.pubsub.dlq_topic_id
+  dataflow_job_name  = module.dataflow.job_name
 
   depends_on = [module.dataflow, module.pubsub, module.vertex_ai]
 }

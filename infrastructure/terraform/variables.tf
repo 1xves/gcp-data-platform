@@ -163,8 +163,8 @@ variable "create_dataflow_job" {
     Set to false on first deploy (before the container image exists).
     After running `make pipeline-deploy`, set to true and re-apply.
   EOT
-  type    = bool
-  default = false
+  type        = bool
+  default     = false
 }
 
 variable "dataflow_on_delete" {
@@ -173,8 +173,8 @@ variable "dataflow_on_delete" {
     "cancel" — immediately stops the job. Use in staging (fast teardown, no message SLA).
     "drain"  — waits for in-flight messages to finish. Use in production (can take hours).
   EOT
-  type    = string
-  default = "drain"
+  type        = string
+  default     = "drain"
 
   validation {
     condition     = contains(["cancel", "drain"], var.dataflow_on_delete)
@@ -199,8 +199,8 @@ variable "predictor_image" {
     Updated automatically by GitHub Actions CD on every merge to main.
     Leave empty on first apply — a placeholder hello-world image will be used.
   EOT
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }
 
 variable "predictor_model_version" {
@@ -215,8 +215,8 @@ variable "predictor_min_instances" {
     0 = scale to zero, $0/month at idle (cold start ~15s due to GCS model download).
     1 = always warm, ~$1.50/month — set this before a live demo to avoid cold start.
   EOT
-  type    = number
-  default = 0
+  type        = number
+  default     = 0
 }
 
 variable "predictor_max_instances" {
@@ -253,8 +253,8 @@ variable "billing_account_id" {
     Required to create google_billing_budget resources. The Terraform service account
     must have roles/billing.costsManager on the billing account.
   EOT
-  type      = string
-  sensitive = true
+  type        = string
+  sensitive   = true
 
   validation {
     condition     = can(regex("^[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}$", var.billing_account_id))
@@ -270,8 +270,8 @@ variable "budget_monthly_limit_usd" {
     The budget is informational only — no automatic disablement occurs unless
     you wire a Cloud Function to the Pub/Sub notification channel.
   EOT
-  type    = number
-  default = 50
+  type        = number
+  default     = 50
 
   validation {
     condition     = var.budget_monthly_limit_usd > 0
@@ -321,8 +321,38 @@ variable "enable_gke" {
     Set to true when ready to test the predictor serving layer (Helm chart, ArgoCD).
     Costs ~$170-200/month when enabled; $0 when disabled.
   EOT
-  type    = bool
-  default = false
+  type        = bool
+  default     = false
+}
+
+variable "enable_filestore" {
+  description = <<-EOT
+    Provision the Filestore NFS instance (shared reference-data volume for
+    Dataflow workers / GKE pods — see modules/filestore/ and docs/filestore-mount.md).
+    COST: BASIC_HDD bills the full 1 TiB provisioned floor (~$204/month) whether
+    used or not. Keep false in staging; enable only for the NFS demo or when a
+    workload genuinely needs a shared POSIX volume.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "filestore_zone" {
+  description = "Zone for the (zonal) BASIC-tier Filestore instance. Match the GKE/Dataflow worker zone; us-central1-a has confirmed capacity."
+  type        = string
+  default     = "us-central1-a"
+}
+
+variable "filestore_tier" {
+  description = "Filestore tier. BASIC_HDD (1 TiB floor) for read-mostly reference data; BASIC_SSD (2.5 TiB floor) only if NFS latency matters."
+  type        = string
+  default     = "BASIC_HDD"
+}
+
+variable "filestore_capacity_gb" {
+  description = "Provisioned Filestore capacity in GB (billed on provisioned, not used). 1024 is the BASIC_HDD minimum."
+  type        = number
+  default     = 1024
 }
 
 variable "github_actions_sa_email" {
@@ -334,6 +364,6 @@ variable "github_actions_sa_email" {
     Created during the initial WIF bootstrap — not managed by this Terraform config.
     Leave empty to skip the IAM binding (e.g. when testing Terraform locally without GKE).
   EOT
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }
