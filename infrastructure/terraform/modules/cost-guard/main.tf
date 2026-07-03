@@ -107,6 +107,17 @@ data "archive_file" "src" {
   type        = "zip"
   source_dir  = "${path.module}/function"
   output_path = "${path.module}/.build/cost-guard-src.zip"
+
+  # Ship ONLY the runtime source (main.py + requirements.txt). The unit tests
+  # live in function/tests/ and must not be bundled: they'd bloat the deployed
+  # artifact and — worse — every test edit would change the source hash and
+  # trigger a redeploy of the kill-switch function on the next apply.
+  excludes = [
+    "tests/**",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    ".pytest_cache/**",
+  ]
 }
 
 resource "google_storage_bucket_object" "src" {
