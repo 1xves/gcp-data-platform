@@ -8,7 +8,9 @@
 #   2. Terraform validate — catches syntax errors and missing required variables
 #   3. Terraform plan     — shows the proposed diff against staging state
 #   4. Docker build       — verifies the predictor image builds cleanly
-#   5. Predictor tests    — unit tests for prediction logic and business rules
+#   5. Predictor & bridge tests — prediction logic, business rules, ack/nack
+#   6. Dataflow tests     — dedup/parse transform unit tests (DoFns invoked directly)
+#   7. Cost-guard tests   — kill-switch threshold, DRY_RUN, teardown isolation
 #
 # Required GitHub Secrets (Settings → Secrets → Actions):
 #   GCP_PROJECT_ID          — project-6db0f664-1423-47cb-86d
@@ -27,6 +29,7 @@ on:
     paths:
       - 'infrastructure/terraform/**'
       - 'vertex_ai/**'
+      - 'pipelines/**'
       - '.github/workflows/ci.yml'
 
 permissions:
@@ -165,7 +168,7 @@ jobs:
           # This validates the Dockerfile and all COPY paths are correct.
 
   predictor-tests:
-    name: Predictor Unit Tests
+    name: Predictor & Bridge Unit Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -182,12 +185,14 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r vertex_ai/serving/requirements.txt
+          pip install -r vertex_ai/bridge/requirements.txt
           pip install pytest pytest-cov
 
       - name: Run tests
         env:
           # Minimal env vars so predictor.py can be imported without connecting to GCP.
           # Tests mock all GCP clients — no live GCP access needed in CI.
+          # conftest.py provides setdefault fallbacks for anything not set here.
           GOOGLE_CLOUD_PROJECT: test-project
           FEATURE_STORE_ID: test_feature_store
           AIP_STORAGE_URI: /tmp/test-model
@@ -195,6 +200,53 @@ jobs:
           TESTING: "true"
         run: |
           pytest vertex_ai/tests/ -v --cov=vertex_ai --cov-report=term-missing
-        continue-on-error: true
-        # continue-on-error until tests/ directory is populated.
-        # Remove this flag once tests are written.
+
+  dataflow-tests:
+    name: Dataflow Transform Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches the Flex Template base image (python310-template-launcher-base).
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r pipelines/dataflow/requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        run: |
+          pytest pipelines/dataflow/tests/ -v
+
+  cost-guard-tests:
+    name: Cost-Guard Function Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches the Cloud Function runtime (python312 in modules/cost-guard/main.tf).
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r infrastructure/terraform/modules/cost-guard/function/requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        run: |
+          pytest infrastructure/terraform/modules/cost-guard/function/tests/ -v

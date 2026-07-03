@@ -1,4 +1,7 @@
-apache-beam[gcp]==2.55.0
+# Pinned to match the deployed Flex Template image. The Dockerfile previously
+# installed 2.55.0 from this file and then downgraded to 2.53.0 in a later
+# layer — 2.53.0 is what actually runs in staging.
+apache-beam[gcp]==2.53.0
 fastavro==1.9.4
 google-cloud-pubsub==2.21.1
 google-cloud-bigquery==3.19.0
