@@ -199,7 +199,7 @@ Producers
 
 - **At rest**: Cloud-managed keys (CMEK optional for regulated data)
 - **In transit**: TLS 1.3 enforced on all service-to-service calls
-- **PII handling**: `user_id` pseudonymized via Cloud DLP before writing to `raw_events`; real user_id stored in encrypted lookup table
+- **PII handling**: `user_id` is pseudonymized at the analytics boundary, not at ingest. `raw_events` stores the raw `user_id` (IAM-restricted dataset, 90-day partition expiry); analyst-facing access goes through an authorized view exposing `user_id_pseudonymized` (first 16 hex chars of SHA256 — see `modules/bigquery/main.tf`). Ingest-time tokenization via Cloud DLP is a production-hardening item, deliberately not implemented in staging (cost + latency on the hot path). Trade-off tracked as G-6 in `docs/requirements-traceability-matrix.md`.
 
 ### 5.3 Network Security
 

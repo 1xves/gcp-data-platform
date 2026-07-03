@@ -200,9 +200,9 @@ resource "google_bigquery_table" "processed_events" {
 ###############################################################################
 
 resource "google_bigquery_table" "event_aggregates" {
-  dataset_id = google_bigquery_dataset.processed.dataset_id
-  table_id   = "event_aggregates"
-  project    = var.project_id
+  dataset_id  = google_bigquery_dataset.processed.dataset_id
+  table_id    = "event_aggregates"
+  project     = var.project_id
   description = "1-minute tumbling window aggregations per user per event_type."
 
   require_partition_filter = true
@@ -282,14 +282,14 @@ resource "google_bigquery_table" "enriched_interventions" {
 
 # Analysts get a view that excludes raw PII and enforces a 90-day lookback
 resource "google_bigquery_table" "processed_events_analyst_view" {
-  dataset_id = google_bigquery_dataset.processed.dataset_id
-  table_id   = "processed_events_analyst_view"
-  project    = var.project_id
-  description = "Authorized view for analysts: PII excluded, last 90 days only."
+  dataset_id          = google_bigquery_dataset.processed.dataset_id
+  table_id            = "processed_events_analyst_view"
+  project             = var.project_id
+  description         = "Authorized view for analysts: PII excluded, last 90 days only."
   deletion_protection = false
 
   view {
-    query = <<-SQL
+    query          = <<-SQL
       SELECT
         event_id,
         event_type,

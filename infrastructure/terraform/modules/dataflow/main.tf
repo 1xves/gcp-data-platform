@@ -12,16 +12,16 @@ resource "google_storage_bucket_object" "flex_template_metadata" {
     name        = "Event Processor Pipeline"
     description = "Streaming pipeline: Pub/Sub → validate → deduplicate → enrich → BigQuery"
     parameters = [
-      { name = "input_subscription",      label = "Pub/Sub subscription ID", isOptional = false },
-      { name = "raw_output_table",        label = "BigQuery raw events table", isOptional = false },
-      { name = "agg_output_table",        label = "BigQuery aggregates table", isOptional = false },
-      { name = "dlq_topic",               label = "Dead-letter Pub/Sub topic", isOptional = false },
-      { name = "reference_data_gcs",      label = "GCS path for reference data", isOptional = false },
-      { name = "temp_location",           label = "Temporary GCS path", isOptional = true },
-      { name = "staging_location",        label = "Staging GCS path", isOptional = true },
-      { name = "no_use_public_ips",       label = "No Public IPs", isOptional = true },
-      { name = "max_workers",             label = "Max Workers", isOptional = true },
-      { name = "machine_type",            label = "Machine Type", isOptional = true },
+      { name = "input_subscription", label = "Pub/Sub subscription ID", isOptional = false },
+      { name = "raw_output_table", label = "BigQuery raw events table", isOptional = false },
+      { name = "agg_output_table", label = "BigQuery aggregates table", isOptional = false },
+      { name = "dlq_topic", label = "Dead-letter Pub/Sub topic", isOptional = false },
+      { name = "reference_data_gcs", label = "GCS path for reference data", isOptional = false },
+      { name = "temp_location", label = "Temporary GCS path", isOptional = true },
+      { name = "staging_location", label = "Staging GCS path", isOptional = true },
+      { name = "no_use_public_ips", label = "No Public IPs", isOptional = true },
+      { name = "max_workers", label = "Max Workers", isOptional = true },
+      { name = "machine_type", label = "Machine Type", isOptional = true },
       { name = "enable_streaming_engine", label = "Enable Streaming Engine", isOptional = true }
     ]
   })
@@ -32,7 +32,7 @@ resource "google_storage_bucket_object" "flex_template_metadata" {
 # provision all infrastructure before the container image exists.
 # After running `make pipeline-deploy`, set create_dataflow_job = true and re-apply.
 resource "google_dataflow_flex_template_job" "event_processor" {
-  count = var.create_dataflow_job ? 1 : 0
+  count                   = var.create_dataflow_job ? 1 : 0
   provider                = google-beta
   project                 = var.project_id
   name                    = "${var.resource_prefix}-event-processor-v5"
@@ -54,11 +54,11 @@ resource "google_dataflow_flex_template_job" "event_processor" {
     staging_location   = "gs://${var.staging_bucket}/dataflow-staging/"
 
     # Networking — private, no public IPs
-    no_use_public_ips  = "true"
+    no_use_public_ips = "true"
 
     # Scaling
-    max_workers        = tostring(var.max_workers)
-    machine_type       = var.machine_type
+    max_workers             = tostring(var.max_workers)
+    machine_type            = var.machine_type
     enable_streaming_engine = "true" # Required for exactly-once Pub/Sub
   }
 

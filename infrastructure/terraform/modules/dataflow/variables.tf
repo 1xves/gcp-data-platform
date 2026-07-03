@@ -19,8 +19,8 @@ variable "create_dataflow_job" {
     On first deploy, leave false so infrastructure can be provisioned without
     the template existing yet. Set to true on subsequent applies to start the job.
   EOT
-  type    = bool
-  default = false
+  type        = bool
+  default     = false
 }
 
 variable "on_delete" {
@@ -32,8 +32,8 @@ variable "on_delete" {
                before the job stops (can take hours on a streaming job).
                Use in production to guarantee exactly-once delivery.
   EOT
-  type    = string
-  default = "drain"
+  type        = string
+  default     = "drain"
 
   validation {
     condition     = contains(["cancel", "drain"], var.on_delete)

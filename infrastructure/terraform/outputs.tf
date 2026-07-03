@@ -29,6 +29,13 @@ output "gke_cluster_endpoint" {
   sensitive   = true
 }
 
+# ── Filestore ─────────────────────────────────────────────────────────────────
+
+output "filestore_mount_source" {
+  description = "NFS mount source (<ip>:/<share>) for the reference-data volume. Null while enable_filestore = false. Full mount runbook: docs/filestore-mount.md."
+  value       = var.enable_filestore ? module.filestore[0].mount_source : null
+}
+
 output "predictor_service_account_email" {
   description = "GCP Service Account email for the predictor Workload Identity. Annotate the Kubernetes ServiceAccount with: iam.gke.io/gcp-service-account=<this value>."
   value       = var.enable_gke ? module.gke[0].predictor_service_account_email : null

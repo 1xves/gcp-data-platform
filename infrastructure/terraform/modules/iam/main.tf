@@ -18,17 +18,17 @@ resource "google_service_account" "dataflow_worker" {
 
 resource "google_project_iam_member" "dataflow_worker_roles" {
   for_each = toset([
-    "roles/dataflow.worker",            # Run as Dataflow worker
-    "roles/bigquery.dataEditor",        # Write rows to BigQuery tables
-    "roles/bigquery.jobUser",           # Submit BigQuery jobs
-    "roles/storage.objectViewer",       # Read reference data from GCS
-    "roles/storage.objectAdmin",        # Write Dataflow temp/staging files
-    "roles/pubsub.subscriber",          # Pull from subscriptions
-    "roles/pubsub.publisher",           # Publish to DLQ topic
+    "roles/dataflow.worker",              # Run as Dataflow worker
+    "roles/bigquery.dataEditor",          # Write rows to BigQuery tables
+    "roles/bigquery.jobUser",             # Submit BigQuery jobs
+    "roles/storage.objectViewer",         # Read reference data from GCS
+    "roles/storage.objectAdmin",          # Write Dataflow temp/staging files
+    "roles/pubsub.subscriber",            # Pull from subscriptions
+    "roles/pubsub.publisher",             # Publish to DLQ topic
     "roles/secretmanager.secretAccessor", # Read pipeline secrets
-    "roles/monitoring.metricWriter",    # Write custom Dataflow metrics
-    "roles/cloudtrace.agent",           # Write trace data
-    "roles/artifactregistry.reader",    # Pull Docker images for Flex Templates
+    "roles/monitoring.metricWriter",      # Write custom Dataflow metrics
+    "roles/cloudtrace.agent",             # Write trace data
+    "roles/artifactregistry.reader",      # Pull Docker images for Flex Templates
   ])
   project = var.project_id
   role    = each.value
@@ -48,12 +48,12 @@ resource "google_service_account" "pipeline_runner" {
 
 resource "google_project_iam_member" "pipeline_runner_roles" {
   for_each = toset([
-    "roles/aiplatform.user",            # Submit Vertex AI jobs + pipelines
-    "roles/bigquery.dataViewer",        # Read training data from BigQuery
-    "roles/bigquery.jobUser",           # Submit BigQuery export jobs
-    "roles/storage.objectAdmin",        # Read/write ML artifacts to GCS
-    "roles/artifactregistry.writer",    # Push Docker images for custom training
-    "roles/iam.serviceAccountUser",     # Impersonate training SA for custom jobs
+    "roles/aiplatform.user",         # Submit Vertex AI jobs + pipelines
+    "roles/bigquery.dataViewer",     # Read training data from BigQuery
+    "roles/bigquery.jobUser",        # Submit BigQuery export jobs
+    "roles/storage.objectAdmin",     # Read/write ML artifacts to GCS
+    "roles/artifactregistry.writer", # Push Docker images for custom training
+    "roles/iam.serviceAccountUser",  # Impersonate training SA for custom jobs
   ])
   project = var.project_id
   role    = each.value
@@ -97,10 +97,10 @@ resource "google_service_account" "vertex_serving" {
 
 resource "google_project_iam_member" "vertex_serving_roles" {
   for_each = toset([
-    "roles/aiplatform.serviceAgent",     # Read from Feature Store online serving API
-    "roles/bigquery.dataEditor",         # Write prediction logs
-    "roles/bigquery.jobUser",            # Submit streaming inserts
-    "roles/monitoring.metricWriter",     # Write serving latency metrics
+    "roles/aiplatform.serviceAgent",      # Read from Feature Store online serving API
+    "roles/bigquery.dataEditor",          # Write prediction logs
+    "roles/bigquery.jobUser",             # Submit streaming inserts
+    "roles/monitoring.metricWriter",      # Write serving latency metrics
     "roles/secretmanager.secretAccessor", # Read API keys for downstream enrichment
   ])
   project = var.project_id

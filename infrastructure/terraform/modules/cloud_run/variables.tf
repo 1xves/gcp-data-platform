@@ -24,8 +24,8 @@ variable "image" {
     The image must exist in Artifact Registry before apply.
     On first deploy, build and push the image first, then set this variable.
   EOT
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }
 
 variable "service_account_email" {
@@ -82,8 +82,8 @@ variable "min_instance_count" {
     0 = scale to zero (cold starts ~10-15s due to model download from GCS).
     1 = always-warm, costs ~$1.50/month at idle — recommended during active demos.
   EOT
-  type    = number
-  default = 0
+  type        = number
+  default     = 0
 
   validation {
     condition     = var.min_instance_count >= 0 && var.min_instance_count <= 5
@@ -126,8 +126,8 @@ variable "allow_unauthenticated" {
     true  = public URL, no auth required — convenient for demos and portfolio demos.
     false = requires a valid Google identity token — use for production or sensitive data.
   EOT
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
 }
 
 variable "log_level" {
@@ -150,6 +150,6 @@ variable "churn_high_risk_topic" {
     that crosses the CHURN_HIGH_RISK_THRESHOLD (default 0.7).
     Leave empty (default) to disable OSINT bridge publishing.
   EOT
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }

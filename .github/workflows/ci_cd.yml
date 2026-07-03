@@ -1,10 +1,23 @@
-name: GCP Data Platform CI/CD
+name: GCP Data Platform CI/CD (legacy — manual only)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STATUS: superseded for routine CI/CD. Kept as a manually-triggered showcase
+# of the Packer worker-image build and ArgoCD GitOps sync jobs.
+#
+# The active pipelines are:
+#   ci.yml       — PR validation (terraform plan, docker build, unit tests)
+#   cd.yml       — deploy on merge to main (WIF auth, Cloud Run deploy)
+#   gke-up.yml / gke-down.yml — on-demand GKE demo environment
+#
+# Why manual-only: this workflow predates the WIF migration (it authenticates
+# with a GCP_SA_KEY JSON secret that no longer exists) and its lint/type gates
+# don't reflect the current codebase. Running it on every push produced
+# permanent red ✗s on commits. workflow_dispatch keeps the Packer/ArgoCD jobs
+# runnable on demand without gating merges.
+# ─────────────────────────────────────────────────────────────────────────────
 
 on:
-  push:
-    branches: [main, staging]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 env:
   PROJECT_ID:  ${{ secrets.GCP_PROJECT_ID }}

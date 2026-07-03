@@ -23,6 +23,10 @@ htmlcov/
 *.tfplan
 # Terraform plan output files (may contain sensitive resource values)
 *.plan
+tfplan*.out
+tfplan*.binary
+# Coverage database variants (pytest-cov parallel/PID-suffixed files)
+.coverage.*
 # One-time macOS deployment helpers — not part of the project
 *.command
 .build/
