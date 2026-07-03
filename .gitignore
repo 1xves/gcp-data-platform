@@ -17,7 +17,8 @@ htmlcov/
 
 # ─── Terraform ───────────────────────────────────────────────────────────────
 .terraform/
-.terraform.lock.hcl
+# NOTE: .terraform.lock.hcl is intentionally committed — pinning provider
+# versions/hashes across platforms keeps CI and local builds byte-reproducible.
 *.tfstate
 *.tfstate.*
 *.tfplan
