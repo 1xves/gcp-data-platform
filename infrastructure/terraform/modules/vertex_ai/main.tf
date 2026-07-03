@@ -27,10 +27,10 @@ resource "google_vertex_ai_featurestore" "platform" {
 }
 
 resource "google_vertex_ai_featurestore_entitytype" "user" {
-  provider      = google-beta
-  name          = "user"
-  featurestore  = google_vertex_ai_featurestore.platform.id
-  description   = "User-level entity — one row per user_id"
+  provider     = google-beta
+  name         = "user"
+  featurestore = google_vertex_ai_featurestore.platform.id
+  description  = "User-level entity — one row per user_id"
 
   monitoring_config {
     snapshot_analysis {
@@ -47,16 +47,16 @@ resource "google_vertex_ai_featurestore_entitytype" "user" {
 }
 
 resource "google_vertex_ai_featurestore_entitytype_feature" "user_features" {
-  provider    = google-beta
-  for_each    = {
-    event_count_7d          = { type = "INT64",  description = "Total event count in last 7 days" }
-    purchase_count_30d      = { type = "INT64",  description = "Purchase events in last 30 days" }
+  provider = google-beta
+  for_each = {
+    event_count_7d          = { type = "INT64", description = "Total event count in last 7 days" }
+    purchase_count_30d      = { type = "INT64", description = "Purchase events in last 30 days" }
     avg_session_duration_7d = { type = "DOUBLE", description = "Average session duration (seconds) in last 7 days" }
-    last_active_days_ago    = { type = "INT64",  description = "Days since last activity" }
+    last_active_days_ago    = { type = "INT64", description = "Days since last activity" }
     country                 = { type = "STRING", description = "User country from profile" }
     plan_tier               = { type = "STRING", description = "Subscription plan tier" }
-    page_view_7d            = { type = "INT64",  description = "Page view count last 7 days" }
-    search_count_7d         = { type = "INT64",  description = "Search event count last 7 days" }
+    page_view_7d            = { type = "INT64", description = "Page view count last 7 days" }
+    search_count_7d         = { type = "INT64", description = "Search event count last 7 days" }
     total_revenue_30d       = { type = "DOUBLE", description = "Total revenue attributed to user in 30 days" }
     churn_risk_prev         = { type = "DOUBLE", description = "Previous model churn risk score (feature for next model)" }
   }

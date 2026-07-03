@@ -45,7 +45,7 @@ resource "google_monitoring_alert_policy" "dlq_spike" {
   }
 
   documentation {
-    content = <<-EOT
+    content   = <<-EOT
       ## DLQ Spike Alert
 
       More than 100 messages routed to dead-letter topic in 5 minutes.
@@ -78,13 +78,13 @@ resource "google_monitoring_alert_policy" "pipeline_lag" {
   conditions {
     display_name = "Dataflow system lag > 300 seconds"
     condition_threshold {
-      filter = <<-EOT
+      filter          = <<-EOT
         resource.type="dataflow_job"
         AND metric.type="dataflow.googleapis.com/job/system_lag"
         AND resource.labels.job_name=monitoring.regex.full_match("${var.dataflow_job_name}.*")
       EOT
       comparison      = "COMPARISON_GT"
-      threshold_value = 300  # 5 minutes
+      threshold_value = 300 # 5 minutes
       duration        = "120s"
 
       aggregations {
@@ -95,7 +95,7 @@ resource "google_monitoring_alert_policy" "pipeline_lag" {
   }
 
   documentation {
-    content = <<-EOT
+    content   = <<-EOT
       ## Dataflow Lag Alert
 
       Pipeline watermark > 5 minutes behind real-time. Data freshness SLO at risk.
@@ -120,7 +120,7 @@ resource "google_monitoring_alert_policy" "serving_latency" {
   # GCP validates the metric descriptor at create time even when enabled=false.
   # The metric only appears after predictions are served.
   # To enable: remove count = 0 and re-apply after model deployment.
-  count        = 0
+  count = 0
 
   display_name = "[${var.resource_prefix}] Vertex AI Endpoint P99 Latency Exceeded"
   project      = var.project_id
@@ -129,12 +129,12 @@ resource "google_monitoring_alert_policy" "serving_latency" {
   conditions {
     display_name = "Prediction P99 latency > 100ms"
     condition_threshold {
-      filter = <<-EOT
+      filter          = <<-EOT
         resource.type="aiplatform.googleapis.com/Endpoint"
         AND metric.type="aiplatform.googleapis.com/prediction/online/response_latencies"
       EOT
       comparison      = "COMPARISON_GT"
-      threshold_value = 100  # milliseconds
+      threshold_value = 100 # milliseconds
       duration        = "120s"
 
       aggregations {
@@ -146,7 +146,7 @@ resource "google_monitoring_alert_policy" "serving_latency" {
   }
 
   documentation {
-    content = <<-EOT
+    content   = <<-EOT
       ## Vertex AI Serving Latency Alert
 
       Online prediction P99 latency > 100ms SLO.
@@ -167,7 +167,7 @@ resource "google_monitoring_alert_policy" "serving_latency" {
 ###############################################################################
 
 resource "google_monitoring_dashboard" "platform_overview" {
-  project        = var.project_id
+  project = var.project_id
   dashboard_json = jsonencode({
     displayName = "${var.resource_prefix} — GCP Data Platform Overview"
     gridLayout = {
@@ -179,7 +179,7 @@ resource "google_monitoring_dashboard" "platform_overview" {
             dataSets = [{
               timeSeriesQuery = {
                 timeSeriesFilter = {
-                  filter = "metric.type=\"pubsub.googleapis.com/subscription/num_undelivered_messages\" resource.type=\"pubsub_subscription\""
+                  filter      = "metric.type=\"pubsub.googleapis.com/subscription/num_undelivered_messages\" resource.type=\"pubsub_subscription\""
                   aggregation = { perSeriesAligner = "ALIGN_MAX", alignmentPeriod = "60s" }
                 }
               }
@@ -194,7 +194,7 @@ resource "google_monitoring_dashboard" "platform_overview" {
             dataSets = [{
               timeSeriesQuery = {
                 timeSeriesFilter = {
-                  filter = "metric.type=\"dataflow.googleapis.com/job/system_lag\" resource.type=\"dataflow_job\""
+                  filter      = "metric.type=\"dataflow.googleapis.com/job/system_lag\" resource.type=\"dataflow_job\""
                   aggregation = { perSeriesAligner = "ALIGN_MAX", alignmentPeriod = "60s" }
                 }
               }
@@ -208,7 +208,7 @@ resource "google_monitoring_dashboard" "platform_overview" {
             dataSets = [{
               timeSeriesQuery = {
                 timeSeriesFilter = {
-                  filter = "metric.type=\"aiplatform.googleapis.com/prediction/online/response_latencies\" resource.type=\"aiplatform.googleapis.com/Endpoint\""
+                  filter      = "metric.type=\"aiplatform.googleapis.com/prediction/online/response_latencies\" resource.type=\"aiplatform.googleapis.com/Endpoint\""
                   aggregation = { perSeriesAligner = "ALIGN_PERCENTILE_99", alignmentPeriod = "60s" }
                 }
               }
@@ -222,7 +222,7 @@ resource "google_monitoring_dashboard" "platform_overview" {
             dataSets = [{
               timeSeriesQuery = {
                 timeSeriesFilter = {
-                  filter = "metric.type=\"dataflow.googleapis.com/job/current_num_vcpus\" resource.type=\"dataflow_job\""
+                  filter      = "metric.type=\"dataflow.googleapis.com/job/current_num_vcpus\" resource.type=\"dataflow_job\""
                   aggregation = { perSeriesAligner = "ALIGN_MAX", alignmentPeriod = "60s" }
                 }
               }
