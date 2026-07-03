@@ -90,7 +90,13 @@ jobs:
             -var="billing_account_id=${{ secrets.BILLING_ACCOUNT_ID }}" \
             -no-color \
             -input=false \
+            -lock=false \
             -out=tfplan.binary
+        # -lock=false: PR plans are speculative and read-only — they never
+        # apply, so they don't need to acquire the state lock. This keeps the
+        # CI identity's state-bucket access read-only (least privilege: a PR
+        # run cannot write state or lock out a real apply). The apply path
+        # (run locally / with elevated identity) still locks normally.
         continue-on-error: true
 
       - name: Post Plan as PR Comment
