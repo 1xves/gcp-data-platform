@@ -131,7 +131,7 @@ Throughput at the stated peak is an **analytical claim verified by design review
 |--------|----------|--------|
 | Unit tests: threshold, DRY_RUN, teardown isolation, IAM-preserving scale-down | `infrastructure/terraform/modules/cost-guard/function/tests/test_cost_guard.py` (31 cases) | ✅ Verified |
 | Live rehearsal | DRY_RUN trip at simulated $75: all 4 teardown actions planned, zero errors (2026-06-16) | ✅ Verified (point-in-time) |
-| Real incident hardening | README "Cost Incident & Resolution" — $336 event, root causes, fixes | ✅ Verified by fire |
+| Real incident hardening | README "Cost Incident & Resolution" — June 2026 event ($393/month, +1,026%; $271.14 from one SKU: Feature Store online serving nodes), root causes, fixes | ✅ Verified by fire (diagnosis corrected 2026-07-03 against SKU-level billing data) |
 
 ---
 

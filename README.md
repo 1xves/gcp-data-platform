@@ -150,26 +150,33 @@ Billing budget alerts fire at 25%, 50%, and 100% of a configurable monthly cap, 
 
 ## Cost Incident & Resolution
 
-**What happened.** During Phase 4 development (GKE predictor serving validation), the GKE cluster ran for approximately 5 days without teardown, accumulating $336.83 in charges across the billing period — a forecasted rate of $657/month. The billing spike was not caught in real time because no billing budget alerts had been configured in the initial Terraform deployment.
+*This section was corrected on 2026-07-03 after auditing the actual billing-report data. An earlier version attributed the spike primarily to GKE; the billing SKU breakdown shows that was wrong.*
+
+**What happened.** During the June 2026 staging build-out (June 9–13), account spend jumped from near-zero to $55–75/day, closing the month at **$393.01 — a 1,026% increase over May**. The dominant cost was a single SKU: **Vertex AI "Feature Store online serving node" — $271.14** of the month's total. The Terraform Vertex AI module hardcoded `online_serving_config { fixed_node_count = 3 }`, so every apply during the deployment push provisioned three always-on serving nodes at ~$0.75/node-hour (~$54/day, ~$1,620/month run-rate) — production-grade HA capacity, reserved around the clock, serving zero requests in a staging environment. GKE contributed a further ~$42 (management fee $7.58 plus node VMs billed under Compute Engine), and a Dataflow streaming job added ~$3/day. The spike was not caught in real time because no billing budget alerts had been configured, and manual teardowns didn't stick: applying the configuration for any other reason re-asserted the full blueprint, recreating the expensive resources.
 
 **Root causes identified:**
 
-*No billing budget in Phase 1 Terraform.* The initial infrastructure deployment did not include `google_billing_budget` resources. Without alerts, there was no automated signal when daily spend exceeded expected levels.
+*Provisioned-capacity pricing was misunderstood.* Feature Store online nodes bill per node-hour **reserved**, not per request served. "Usage cost" on the invoice was 100% idle standby. Every resource in a blueprint should be classified as billing-by-existence or billing-by-activity; the by-existence ones are the dangerous class.
 
-*GKE idle cost is substantial.* A GKE Standard cluster incurs a $73/month cluster management fee plus node costs whether or not workloads are scheduled. Running a cluster for validation and leaving it up between sessions compounded quickly.
+*A production default hardcoded in a module.* `fixed_node_count = 3` made every environment — including staging — pay for HA online serving. Expensive settings must be variables with cheap defaults, not constants.
 
-*`on_delete = "drain"` on a streaming Dataflow job.* A teardown attempt hung for 2h24m waiting for a running streaming job to drain. This extended the billing window and blocked teardown.
+*No billing governance.* No `google_billing_budget` alerts, and no billing export feeding any automated response. The first signal was the invoice.
 
-**What was fixed:**
+*Manual teardowns are drift, not fixes.* Resources switched off by hand outside Terraform were "corrected" back on by the next apply. The safe state must live in the committed configuration.
 
-- Added `google_billing_budget` to Terraform with alerts at 25%, 50%, and 100% of a monthly cap, wired to Cloud Monitoring email notifications
-- Changed Dataflow `on_delete` to a per-environment variable — `staging.tfvars` sets `"cancel"`, production uses `"drain"`
-- Replaced GKE with Cloud Run as the staging serving layer — $0 idle vs $140-280/month
+*`on_delete = "drain"` on a streaming Dataflow job.* A teardown attempt hung for 2h24m waiting for a running streaming job to drain, extending the billing window.
+
+**What was fixed (remediation 2026-06-13 — daily spend collapsed from ~$55 to under $1 the following day):**
+
+- Parameterized Feature Store nodes: `featurestore_online_node_count` with a committed default of **0** (offline store retained; online capacity scaled up only for demos)
+- Added `google_billing_budget` with alerts at 25%, 50%, 100%, and 100%-forecasted of a $50/month cap, wired to email notifications
+- Built the cost-guard kill-switch: an hourly Cloud Function that tears down billable workloads (reversibly) if daily spend exceeds $50 — rehearsed in DRY_RUN at simulated $75 before arming
+- Changed Dataflow `on_delete` to a per-environment variable — staging uses `"cancel"`, production `"drain"`
+- Replaced GKE with Cloud Run as the staging serving layer ($0 idle); `enable_gke = false` is the committed default, with on-demand `gke-up`/`gke-down` workflows
 - Added `trap teardown EXIT` to the Phase 4 test script so teardown runs on success, failure, and Ctrl+C
-- Set `enable_gke = false` as the committed default in `staging.tfvars`
 - Audited all GCP projects on the billing account for unexpected running resources
 
-**The takeaway.** Billing governance is infrastructure, not an afterthought. Budget alerts, cost-aware architecture decisions, and ephemeral-by-default resource patterns should be in the initial design. That lesson is reflected in this project's current architecture.
+**The takeaway.** Billing governance is infrastructure, not an afterthought — and the off switch has to live in the code. Every expensive resource now defaults to zero/disabled in committed config, so a `terraform apply` re-asserts that things are *off* instead of resurrecting them. The corrected diagnosis is itself part of the lesson: the original write-up blamed the most visible resource (GKE) rather than the most expensive one, because the SKU-level billing data hadn't been audited. Conclusions about incidents should come from the billing export, not from memory of what was being worked on at the time.
 
 ---
 

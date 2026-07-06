@@ -7,6 +7,19 @@
 Feature Store with `online_serving_config { fixed_node_count = 3 }`. Three online-serving nodes
 have run continuously since ~June 1, billing ~$0.26/node-hr (3 × 24h × ~13d ≈ 936 node-hrs ≈ $245).
 
+> **ADDENDUM 2026-07-03 — timeline and rate corrected against the billing report.**
+> The root-cause identification above (3 hardcoded online-serving nodes) is correct, but the
+> estimate is wrong in two ways that roughly cancel out in dollars:
+> - **Start date:** the billing report shows Vertex AI charges near-zero June 1–8, spiking June 9.
+>   The nodes were created during the June 9–13 deployment push, not on June 1.
+> - **Rate:** the SKU "Feature Store online serving node" billed **$271.14** for the month —
+>   over ~5 days that is ~$54/day, i.e. **~$0.75/node-hr for 3 nodes**, not $0.26.
+> Month totals (verified in Billing → Reports, June 1–30): **$393.01 account-wide (+1,026% vs
+> May)**; Vertex AI $271.63 of which $271.14 was the single online-serving-node SKU; GKE ~$42
+> combined (mgmt fee $7.58 + node VMs under Compute Engine). Remediation below executed
+> 2026-06-13; daily spend collapsed to <$1 on June 14. Lesson recorded in the README: diagnose
+> from SKU-level billing data, not from estimates.
+
 > ⚠️ The state file on disk is `errored.tfstate` — a local dump from a failed apply. Do **not**
 > trust it as ground truth. Every step below verifies against live GCP first.
 
