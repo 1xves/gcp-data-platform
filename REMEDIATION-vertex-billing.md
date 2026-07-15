@@ -12,8 +12,10 @@ have run continuously since ~June 1, billing ~$0.26/node-hr (3 × 24h × ~13d �
 > estimate is wrong in two ways that roughly cancel out in dollars:
 > - **Start date:** the billing report shows Vertex AI charges near-zero June 1–8, spiking June 9.
 >   The nodes were created during the June 9–13 deployment push, not on June 1.
-> - **Rate:** the SKU "Feature Store online serving node" billed **$271.14** for the month —
->   over ~5 days that is ~$54/day, i.e. **~$0.75/node-hr for 3 nodes**, not $0.26.
+> - **Rate and duration (settled by the usage column, 2026-07-07):** the SKU "Feature Store
+>   online serving node" billed **$271.14 for 288.45 node-hours** — i.e. **$0.94/node-hr**
+>   (matches the published us-central1 rate), not $0.26. 288.45 ÷ 3 nodes = **~96 hours ≈ 4
+>   days per node**: the nodes ran June 9 → June 13, not June 1 → 13.
 > Month totals (verified in Billing → Reports, June 1–30): **$393.01 account-wide (+1,026% vs
 > May)**; Vertex AI $271.63 of which $271.14 was the single online-serving-node SKU; GKE ~$42
 > combined (mgmt fee $7.58 + node VMs under Compute Engine). Remediation below executed
